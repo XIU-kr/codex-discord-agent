@@ -230,7 +230,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       job.message.id
     );
     const imagePaths = savedAttachments.filter((attachment) => attachment.isImage).map((attachment) => attachment.path);
-    const attachmentPrompt = formatAttachmentPrompt(savedAttachments);
+    const attachmentPrompt = formatAttachmentPrompt(savedAttachments, config.language);
     const prompt = [
       job.prompt || messages.analyzeAttachments,
       attachmentPrompt,
@@ -283,7 +283,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     const running = state.running;
     if (running?.statusMessage) {
       await running.statusMessage.edit({
-        content: `${messages.runFailed}\nElapsed: \`${formatDuration(Date.now() - startedAt)}\``,
+        content: `${messages.runFailed}\n${messages.labels.elapsed}: \`${formatDuration(Date.now() - startedAt, config.language)}\``,
         allowedMentions: { parse: [] }
       }).catch(() => undefined);
     }
@@ -304,8 +304,17 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
     case "status": {
       const running = state?.running;
       const content = running
-        ? `${messages.statusTitle}\nRunning: \`yes\`\nElapsed: \`${formatDuration(Date.now() - running.startedAt)}\`\nQueued: \`${state.queue.length}\``
-        : `${messages.statusTitle}\nRunning: \`no\`\nQueued: \`${state?.queue.length ?? 0}\``;
+        ? [
+          messages.statusTitle,
+          `${messages.labels.running}: \`${messages.values.yes}\``,
+          `${messages.labels.elapsed}: \`${formatDuration(Date.now() - running.startedAt, config.language)}\``,
+          `${messages.labels.queued}: \`${state.queue.length}\``
+        ].join("\n")
+        : [
+          messages.statusTitle,
+          `${messages.labels.running}: \`${messages.values.no}\``,
+          `${messages.labels.queued}: \`${state?.queue.length ?? 0}\``
+        ].join("\n");
       await thread.send({ content, allowedMentions: { parse: [] } });
       return;
     }
@@ -314,10 +323,10 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
       const sessionId = await loadSessionId(workspace);
       const content = [
         messages.workspaceTitle,
-        `Path: \`${workspace.dir}\``,
-        `Session: \`${sessionId ?? "none"}\``,
-        `Size: \`${stats.files} files / ${formatBytes(stats.bytes)}\``,
-        `Updated: \`${stats.updatedAt?.toISOString() ?? "unknown"}\``
+        `${messages.labels.path}: \`${workspace.dir}\``,
+        `${messages.labels.session}: \`${sessionId ?? messages.values.none}\``,
+        `${messages.labels.size}: \`${messages.values.files(stats.files)} / ${formatBytes(stats.bytes)}\``,
+        `${messages.labels.updated}: \`${stats.updatedAt?.toISOString() ?? messages.values.unknown}\``
       ].join("\n");
       await thread.send({ content, allowedMentions: { parse: [] } });
       return;

@@ -93,12 +93,13 @@ export function formatRunHeader(options: {
   sessionId?: string;
   queued: number;
 }, language: BotLanguage = "en"): string {
+  const messages = t(language);
   return [
-    t(language).runStart,
-    `Workspace: \`${options.workspaceDir}\``,
-    `Model: \`${options.model}\` / Reasoning: \`${options.reasoningEffort}\``,
-    `Session: \`${options.sessionId ?? "new"}\``,
-    `Queued: \`${options.queued}\``
+    messages.runStart,
+    `${messages.labels.workspace}: \`${options.workspaceDir}\``,
+    `${messages.labels.model}: \`${options.model}\` / ${messages.labels.reasoning}: \`${options.reasoningEffort}\``,
+    `${messages.labels.session}: \`${options.sessionId ?? messages.values.newSession}\``,
+    `${messages.labels.queued}: \`${options.queued}\``
   ].join("\n");
 }
 
@@ -108,21 +109,31 @@ export function formatRunComplete(options: {
   files?: number;
   bytes?: number;
 }, language: BotLanguage = "en"): string {
+  const messages = t(language);
   const lines = [
-    t(language).runComplete,
-    `Elapsed: \`${formatDuration(options.elapsedMs)}\``,
-    `Session: \`${options.sessionId ?? "unknown"}\``
+    messages.runComplete,
+    `${messages.labels.elapsed}: \`${formatDuration(options.elapsedMs, language)}\``,
+    `${messages.labels.session}: \`${options.sessionId ?? messages.values.unknown}\``
   ];
 
   if (typeof options.files === "number" && typeof options.bytes === "number") {
-    lines.push(`Workspace: \`${options.files} files / ${formatBytes(options.bytes)}\``);
+    lines.push(`${messages.labels.workspace}: \`${messages.values.files(options.files)} / ${formatBytes(options.bytes)}\``);
   }
 
   return lines.join("\n");
 }
 
-export function formatDuration(ms: number): string {
+export function formatDuration(ms: number, language: BotLanguage = "en"): string {
   const seconds = Math.max(0, Math.round(ms / 1000));
+  if (language === "ko") {
+    if (seconds < 60) {
+      return `${seconds}초`;
+    }
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}분 ${remainingSeconds}초`;
+  }
+
   if (seconds < 60) {
     return `${seconds}s`;
   }

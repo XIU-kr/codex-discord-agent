@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Attachment } from "discord.js";
+import { t, type BotLanguage } from "./i18n";
 import type { ThreadWorkspace } from "./workspaces";
 
 export interface SavedAttachment {
@@ -42,17 +43,18 @@ export async function saveDiscordAttachments(
   return saved;
 }
 
-export function formatAttachmentPrompt(attachments: SavedAttachment[]): string {
+export function formatAttachmentPrompt(attachments: SavedAttachment[], language: BotLanguage = "en"): string {
   if (attachments.length === 0) {
     return "";
   }
 
+  const messages = t(language);
   const lines = attachments.map((attachment) => {
-    const kind = attachment.isImage ? "image" : "file";
+    const kind = attachment.isImage ? messages.attachmentKindImage : messages.attachmentKindFile;
     return `- ${attachment.originalName} (${kind}): ${attachment.path}`;
   });
 
-  return `\n\nAttached files saved in the workspace:\n${lines.join("\n")}\n`;
+  return `\n\n${messages.attachmentPromptIntro}\n${lines.join("\n")}\n`;
 }
 
 function sanitizeFileName(fileName: string): string {
