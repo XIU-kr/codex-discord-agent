@@ -125,8 +125,6 @@ export function buildCodexArgs(options: CodexRunOptions): string[] {
     "--skip-git-repo-check",
     "-s",
     "danger-full-access",
-    "-a",
-    "never",
     "-C",
     options.workspaceDir,
     "-"

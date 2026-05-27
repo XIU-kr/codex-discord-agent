@@ -11,13 +11,20 @@ describe("buildCodexArgs", () => {
       workspaceDir: "/tmp/workspace"
     });
 
-    expect(args).toContain("exec");
-    expect(args).toContain("-m");
-    expect(args).toContain("gpt-5.5");
-    expect(args).toContain(`model_reasoning_effort="high"`);
-    expect(args).toContain("danger-full-access");
-    expect(args).toContain("never");
-    expect(args).toContain("/tmp/workspace");
+    expect(args).toEqual([
+      "exec",
+      "--json",
+      "-m",
+      "gpt-5.5",
+      "-c",
+      `model_reasoning_effort="high"`,
+      "--skip-git-repo-check",
+      "-s",
+      "danger-full-access",
+      "-C",
+      "/tmp/workspace",
+      "-"
+    ]);
   });
 
   test("includes image paths", () => {

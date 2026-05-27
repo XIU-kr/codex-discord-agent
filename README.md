@@ -298,7 +298,7 @@ bun run start
 First request:
 
 ```bash
-codex exec --json --skip-git-repo-check -s danger-full-access -a never -m gpt-5.5 -c 'model_reasoning_effort="high"' -C <workspace> -
+codex exec --json --skip-git-repo-check -s danger-full-access -m gpt-5.5 -c 'model_reasoning_effort="high"' -C <workspace> -
 ```
 
 Follow-up request:
@@ -307,4 +307,4 @@ Follow-up request:
 codex exec resume --json -m gpt-5.5 -c 'model_reasoning_effort="high"' <sessionId> -
 ```
 
-`danger-full-access` and approval `never` are powerful settings. Use this bot only in trusted Discord servers and channels.
+`danger-full-access` is a powerful setting. Use this bot only in trusted Discord servers and channels.
