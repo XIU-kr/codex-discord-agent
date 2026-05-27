@@ -1,56 +1,131 @@
 # codex-discord-agent
 
-Discord thread 하나를 Codex 세션 하나와 독립 workspace 하나에 연결하는 TypeScript 봇입니다.
+Run Codex from Discord threads. Each managed Discord thread gets its own isolated workspace and Codex session.
 
-## 동작 방식
+## What It Does
 
-- 지정한 Discord 서버와 부모 채널만 감시합니다.
-- 해당 채널에서 thread가 만들어지면 `BASE_WORKSPACE_DIR/<guildId>/<threadId>` workspace를 준비합니다.
-- thread에 사용자가 메시지를 쓰면 Codex CLI를 실행합니다.
-- 첫 요청은 새 Codex 세션으로 시작하고, 이후 같은 thread의 요청은 저장된 session id로 이어갑니다.
-- Codex가 응답하는 동안 Discord의 typing indicator를 주기적으로 표시합니다.
-- 응답은 Discord 메시지 길이 제한에 맞춰 나뉘며 Markdown/code block을 최대한 보존합니다.
+- Watches one Discord guild and one parent channel.
+- Creates one workspace per thread: `BASE_WORKSPACE_DIR/<guildId>/<threadId>`.
+- Sends each user message in the thread to Codex.
+- Keeps follow-up messages in the same thread attached to the same Codex session.
+- Shows Discord typing indicators and an editable job status message.
+- Supports English and Korean bot messages with `BOT_LANGUAGE=en|ko`.
+- Supports `/codex` thread commands, file attachments, image attachments, cancellation, session reset, and stale workspace cleanup.
+- Installs as a systemd service with an optional daily auto-update timer.
 
-## 요구 사항
+## Requirements
 
-- Linux 서버와 systemd
-- `sudo` 권한 또는 root 권한
-- Codex CLI 로그인 완료 상태
-- Discord bot token
-- Discord Developer Portal에서 Message Content Intent 활성화
+The one-line installer is designed for Linux servers with systemd.
 
-한 줄 설치 스크립트는 필요한 시스템 패키지를 확인하고, 없으면 자동 설치합니다.
+Required:
+
+- Linux with systemd
+- root access or a user with `sudo`
+- Discord server admin permissions
+- a Discord bot token
+- Codex CLI installed and logged in
+
+The installer checks and installs these system packages when missing:
 
 - `curl`
 - `tar`
 - `unzip`
 
-root가 아닌 사용자로 실행하면 설치 중 `sudo` 비밀번호를 물어봅니다. Bun이 없으면 설치 스크립트가 자동으로 설치합니다.
+If you are not root, the installer asks for your `sudo` password at the start. Bun is installed automatically when missing.
 
-## 한 줄 설치
+Codex must be logged in before the bot can use it:
 
-GitHub 릴리즈 tarball을 내려받아 설치하므로 `git clone`이 필요 없습니다.
+```bash
+codex login
+codex --version
+```
+
+If `codex` is not in the service PATH, set `CODEX_BIN` in `.env` to the full path:
+
+```bash
+which codex
+```
+
+## Create The Discord Bot
+
+1. Open the Discord Developer Portal:
+
+   https://discord.com/developers/applications
+
+2. Click **New Application** and choose a name.
+
+   Example: `Codex Discord Agent`
+
+3. Open **Bot** in the left sidebar and click **Add Bot**.
+
+4. In the **Token** section, copy or reset the token.
+
+   This value goes into `DISCORD_TOKEN`. Keep it private.
+
+5. In **Bot > Privileged Gateway Intents**, enable:
+
+   - Message Content Intent
+
+6. Copy the application **Client ID**.
+
+   This value goes into `DISCORD_CLIENT_ID`.
+
+7. Open **OAuth2 > URL Generator**.
+
+   Select this scope:
+
+   - `bot`
+
+   Select these bot permissions:
+
+   - View Channels
+   - Send Messages
+   - Send Messages in Threads
+   - Read Message History
+   - Create Public Threads
+   - Create Private Threads
+   - Use Public Threads
+   - Use Private Threads
+
+8. Open the generated URL and invite the bot to your server.
+
+9. Enable Discord Developer Mode:
+
+   **User Settings > Advanced > Developer Mode**
+
+10. Copy your server ID.
+
+    Right-click the server name and choose **Copy Server ID**. This is `DISCORD_GUILD_ID`.
+
+11. Copy the parent channel ID.
+
+    Right-click the channel where users will create Codex threads and choose **Copy Channel ID**. This is `DISCORD_PARENT_CHANNEL_ID`.
+
+The bot only responds in threads under the configured parent channel.
+
+## One-Line Install
+
+No `git clone` is required. The installer downloads the latest GitHub release tarball.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XIU-kr/codex-discord-agent/main/install.sh | bash
 ```
 
-설치 위치 기본값은 `~/.local/share/codex-discord-agent`입니다. 설치 후 `.env`를 채우고 서비스를 시작합니다.
+Default install path:
 
-```bash
-nano ~/.local/share/codex-discord-agent/.env
-sudo systemctl restart codex-discord-agent
+```text
+~/.local/share/codex-discord-agent
 ```
 
-설치 후에는 전역 명령도 사용할 수 있습니다.
+During installation, the script asks for the required Discord and Codex settings and writes `.env` for you. The Discord token prompt is hidden so it does not echo to your terminal.
+
+After installation, restart the service if you did not start it during install:
 
 ```bash
-codex-discord-agent status
 codex-discord-agent restart
-codex-discord-agent update
 ```
 
-설치 옵션은 환경변수로 지정합니다.
+Install options are configured with environment variables:
 
 ```bash
 CODEX_DISCORD_AGENT_INSTALL_DIR=/opt/codex-discord-agent \
@@ -59,26 +134,157 @@ CODEX_DISCORD_AGENT_START=1 \
 curl -fsSL https://raw.githubusercontent.com/XIU-kr/codex-discord-agent/main/install.sh | bash
 ```
 
-## 설정
+## Configuration
+
+Most users should configure the bot through the interactive setup command:
 
 ```bash
-cp .env.example .env
+codex-discord-agent configure
 ```
 
-`.env`에 값을 채웁니다.
+For checkout-based development, run:
+
+```bash
+scripts/configure-env.sh
+```
+
+The generated `.env` is an internal service configuration file. You normally do not need to edit it manually.
+
+Required values:
 
 ```bash
 DISCORD_TOKEN=...
 DISCORD_CLIENT_ID=...
 DISCORD_GUILD_ID=...
 DISCORD_PARENT_CHANNEL_ID=...
+```
+
+Optional values:
+
+```bash
 BASE_WORKSPACE_DIR=./workspaces
 CODEX_BIN=codex
 CODEX_MODEL=gpt-5.5
 CODEX_REASONING_EFFORT=high
+BOT_LANGUAGE=en
+DISCORD_ALLOWED_USER_IDS=
+DISCORD_ALLOWED_ROLE_IDS=
+STALE_WORKSPACE_DAYS=30
 ```
 
-## 설치와 실행
+Configuration reference:
+
+- `DISCORD_TOKEN`: Discord bot token.
+- `DISCORD_CLIENT_ID`: Discord application client ID.
+- `DISCORD_GUILD_ID`: the only Discord server where the bot runs.
+- `DISCORD_PARENT_CHANNEL_ID`: the parent channel whose threads are managed.
+- `BASE_WORKSPACE_DIR`: root directory for thread workspaces.
+- `CODEX_BIN`: Codex CLI command or full path.
+- `CODEX_MODEL`: Codex model. Default: `gpt-5.5`.
+- `CODEX_REASONING_EFFORT`: reasoning effort. Default: `high`.
+- `BOT_LANGUAGE`: `en` or `ko`. Default: `en`.
+- `DISCORD_ALLOWED_USER_IDS`: comma-separated Discord user IDs allowed to run Codex. Empty means no user allowlist.
+- `DISCORD_ALLOWED_ROLE_IDS`: comma-separated Discord role IDs allowed to run Codex. Empty means no role allowlist.
+- `STALE_WORKSPACE_DAYS`: age threshold for `/codex clean`.
+
+You can re-run the interactive configuration at any time:
+
+```bash
+codex-discord-agent configure
+```
+
+To skip interactive configuration during install, set:
+
+```bash
+CODEX_DISCORD_AGENT_SKIP_CONFIGURE=1
+```
+
+## Global CLI
+
+The installer adds a global command:
+
+```bash
+codex-discord-agent status
+codex-discord-agent restart
+codex-discord-agent update
+codex-discord-agent logs
+codex-discord-agent check
+codex-discord-agent configure
+codex-discord-agent stop
+```
+
+## Discord Thread Commands
+
+Inside a managed thread:
+
+```text
+/codex help
+/codex status
+/codex workspace
+/codex reset
+/codex stop
+/codex logs
+/codex clean
+```
+
+## systemd
+
+Manual service install from a checkout:
+
+```bash
+scripts/install-systemd-service.sh --enable-auto-update --start
+```
+
+Status:
+
+```bash
+codex-discord-agent status
+sudo systemctl status codex-discord-agent
+```
+
+Logs:
+
+```bash
+codex-discord-agent logs
+sudo journalctl -u codex-discord-agent -f
+```
+
+Restart and stop:
+
+```bash
+codex-discord-agent restart
+codex-discord-agent stop
+```
+
+## Updates
+
+Check for updates:
+
+```bash
+codex-discord-agent check
+```
+
+Apply updates:
+
+```bash
+codex-discord-agent update
+```
+
+The one-line installer enables a daily systemd update timer by default:
+
+```bash
+sudo systemctl status codex-discord-agent-update.timer
+sudo systemctl list-timers codex-discord-agent-update.timer
+```
+
+Disable or enable the timer:
+
+```bash
+scripts/install-systemd-service.sh --disable-auto-update
+scripts/install-systemd-service.sh --enable-auto-update
+```
+
+## Local Development
 
 ```bash
 bun install
@@ -87,106 +293,18 @@ bun test
 bun run start
 ```
 
-## systemd 서비스
+## Codex Defaults
 
-백그라운드 상시 실행은 systemd 서비스로 등록합니다.
-
-```bash
-scripts/install-systemd-service.sh --start
-```
-
-설치 스크립트는 레포 경로, 실행 사용자, Bun 위치를 자동으로 감지해서 `/etc/systemd/system/codex-discord-agent.service`를 생성합니다. 자동 업데이트 timer도 같이 켤 수 있습니다.
-
-```bash
-scripts/install-systemd-service.sh --user ubuntu --bun-bin /home/ubuntu/.bun/bin/bun --enable-auto-update --start
-```
-
-등록만 하고 아직 시작하지 않으려면:
-
-```bash
-scripts/install-systemd-service.sh --no-start
-```
-
-상태 확인:
-
-```bash
-codex-discord-agent status
-sudo systemctl status codex-discord-agent
-```
-
-로그 확인:
-
-```bash
-codex-discord-agent logs
-sudo journalctl -u codex-discord-agent -f
-```
-
-재시작과 중지:
-
-```bash
-codex-discord-agent restart
-sudo systemctl restart codex-discord-agent
-codex-discord-agent stop
-sudo systemctl stop codex-discord-agent
-```
-
-서비스 템플릿은 `deploy/codex-discord-agent.service.in`에 있으며, 설치된 서비스는 현재 레포의 `.env`를 읽습니다.
-
-## 업데이트
-
-설치된 버전과 최신 GitHub Release를 확인합니다.
-
-```bash
-codex-discord-agent check
-scripts/update.sh --check
-```
-
-업데이트를 적용합니다.
-
-```bash
-codex-discord-agent update
-scripts/update.sh --apply
-```
-
-한 줄 설치를 사용하면 daily systemd timer가 기본으로 등록됩니다.
-
-```bash
-sudo systemctl status codex-discord-agent-update.timer
-sudo systemctl list-timers codex-discord-agent-update.timer
-```
-
-자동 업데이트를 끄거나 다시 켤 수 있습니다.
-
-```bash
-scripts/install-systemd-service.sh --disable-auto-update
-scripts/install-systemd-service.sh --enable-auto-update
-```
-
-## Discord 권한
-
-봇에는 최소한 다음 권한이 필요합니다.
-
-- View Channels
-- Send Messages
-- Send Messages in Threads
-- Read Message History
-- Use Public Threads
-- Use Private Threads
-
-봇 초대 URL은 Discord Developer Portal의 OAuth2 URL Generator에서 `bot` scope와 위 권한을 선택해 생성합니다.
-
-## Codex 실행 기본값
-
-첫 요청:
+First request:
 
 ```bash
 codex exec --json --skip-git-repo-check -s danger-full-access -a never -m gpt-5.5 -c 'model_reasoning_effort="high"' -C <workspace> -
 ```
 
-후속 요청:
+Follow-up request:
 
 ```bash
 codex exec resume --json -m gpt-5.5 -c 'model_reasoning_effort="high"' <sessionId> -
 ```
 
-`danger-full-access`와 approval `never`는 강한 권한입니다. 신뢰하는 서버와 채널에서만 실행하세요.
+`danger-full-access` and approval `never` are powerful settings. Use this bot only in trusted Discord servers and channels.

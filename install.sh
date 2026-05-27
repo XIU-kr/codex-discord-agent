@@ -184,8 +184,10 @@ tar -xzf "${ARCHIVE}" -C "${EXTRACT_DIR}" --strip-components=1
 
 refuse_unknown_nonempty_dir
 mkdir -p "${INSTALL_DIR}"
+HAD_ENV="0"
 if [[ -f "${INSTALL_DIR}/.env" ]]; then
   cp "${INSTALL_DIR}/.env" "${TMP_DIR}/.env"
+  HAD_ENV="1"
 fi
 if [[ -f "${INSTALL_DIR}/.install.env" ]]; then
   cp "${INSTALL_DIR}/.install.env" "${TMP_DIR}/.install.env"
@@ -202,9 +204,9 @@ shopt -s dotglob nullglob
 cp -a "${EXTRACT_DIR}/"* "${INSTALL_DIR}/"
 shopt -u dotglob nullglob
 
-if [[ -f "${TMP_DIR}/.env" ]]; then
+if [[ "${HAD_ENV}" == "1" && -f "${TMP_DIR}/.env" ]]; then
   cp "${TMP_DIR}/.env" "${INSTALL_DIR}/.env"
-elif [[ ! -f "${INSTALL_DIR}/.env" ]]; then
+elif [[ "${CODEX_DISCORD_AGENT_SKIP_CONFIGURE:-0}" == "1" && ! -f "${INSTALL_DIR}/.env" ]]; then
   cp "${INSTALL_DIR}/.env.example" "${INSTALL_DIR}/.env"
 fi
 
@@ -222,6 +224,10 @@ touch "${INSTALL_DIR}/${INSTALL_MARKER}"
 
 cd "${INSTALL_DIR}"
 "${BUN_BIN}" install --production --frozen-lockfile
+
+if [[ "${CODEX_DISCORD_AGENT_SKIP_CONFIGURE:-0}" != "1" ]]; then
+  scripts/configure-env.sh
+fi
 
 SYSTEMD_ARGS=(--user "${SERVICE_USER}" --bun-bin "${BUN_BIN}")
 if [[ "${ENABLE_AUTO_UPDATE}" == "1" || "${ENABLE_AUTO_UPDATE}" == "true" ]]; then
@@ -245,8 +251,8 @@ codex-discord-agent ${TAG} installed at:
   ${INSTALL_DIR}
 
 Next steps:
-  1. Edit ${INSTALL_DIR}/.env
-  2. Start the service:
+  1. Review ${INSTALL_DIR}/.env if needed.
+  2. Start or restart the service:
      sudo systemctl restart codex-discord-agent
 
 Logs:

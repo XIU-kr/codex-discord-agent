@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
 export interface CodexRunOptions {
   codexBin: string;
@@ -7,6 +8,9 @@ export interface CodexRunOptions {
   prompt: string;
   workspaceDir: string;
   sessionId?: string;
+  imagePaths?: string[];
+  signal?: AbortSignal;
+  onSpawn?: (child: ChildProcessWithoutNullStreams) => void;
 }
 
 export interface CodexRunResult {
@@ -27,6 +31,24 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
     stdio: ["pipe", "pipe", "pipe"],
     env: process.env
   });
+  options.onSpawn?.(child);
+
+  let aborted = false;
+  const abortHandler = (): void => {
+    aborted = true;
+    child.kill("SIGINT");
+    setTimeout(() => {
+      if (!child.killed) {
+        child.kill("SIGKILL");
+      }
+    }, 5_000).unref();
+  };
+
+  if (options.signal?.aborted) {
+    abortHandler();
+  } else {
+    options.signal?.addEventListener("abort", abortHandler, { once: true });
+  }
 
   child.stdin.write(options.prompt);
   child.stdin.end();
@@ -58,6 +80,8 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
   const exitCode = await new Promise<number | null>((resolve, reject) => {
     child.on("error", reject);
     child.on("close", resolve);
+  }).finally(() => {
+    options.signal?.removeEventListener("abort", abortHandler);
   });
 
   if (stdoutBuffer.trim().length > 0) {
@@ -65,6 +89,9 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
   }
 
   if (exitCode !== 0) {
+    if (aborted) {
+      throw new Error("Codex run was stopped by user request.");
+    }
     const message = stderr.trim() || `Codex exited with code ${exitCode ?? "unknown"}.`;
     throw new Error(message);
   }
@@ -88,12 +115,13 @@ export function buildCodexArgs(options: CodexRunOptions): string[] {
   ];
 
   if (options.sessionId) {
-    return ["exec", "resume", ...commonArgs, options.sessionId, "-"];
+    return ["exec", "resume", ...commonArgs, ...buildImageArgs(options.imagePaths), options.sessionId, "-"];
   }
 
   return [
     "exec",
     ...commonArgs,
+    ...buildImageArgs(options.imagePaths),
     "--skip-git-repo-check",
     "-s",
     "danger-full-access",
@@ -103,6 +131,10 @@ export function buildCodexArgs(options: CodexRunOptions): string[] {
     options.workspaceDir,
     "-"
   ];
+}
+
+function buildImageArgs(imagePaths: string[] | undefined): string[] {
+  return (imagePaths ?? []).flatMap((imagePath) => ["-i", imagePath]);
 }
 
 export function parseCodexJsonLine(line: string, state: CodexParseState): void {

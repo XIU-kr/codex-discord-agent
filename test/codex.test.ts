@@ -20,6 +20,20 @@ describe("buildCodexArgs", () => {
     expect(args).toContain("/tmp/workspace");
   });
 
+  test("includes image paths", () => {
+    const args = buildCodexArgs({
+      codexBin: "codex",
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      prompt: "hello",
+      workspaceDir: "/tmp/workspace",
+      imagePaths: ["/tmp/a.png"]
+    });
+
+    expect(args).toContain("-i");
+    expect(args).toContain("/tmp/a.png");
+  });
+
   test("builds resume command for known sessions", () => {
     const args = buildCodexArgs({
       codexBin: "codex",

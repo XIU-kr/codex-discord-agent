@@ -42,6 +42,7 @@ Commands:
   logs        Follow service logs.
   update      Check for and apply the latest release update.
   check       Check whether an update is available.
+  configure   Reconfigure .env interactively.
   version     Show installed package version.
   timer       Show auto-update timer status.
   enable      Enable service start on boot.
@@ -83,6 +84,10 @@ case "${command}" in
   check)
     require_install_dir
     bash "${INSTALL_DIR}/scripts/update.sh" --check "$@"
+    ;;
+  configure)
+    require_install_dir
+    bash "${INSTALL_DIR}/scripts/configure-env.sh" --force "$@"
     ;;
   version)
     require_install_dir

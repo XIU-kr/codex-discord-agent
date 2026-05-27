@@ -1,0 +1,48 @@
+import { t, type BotLanguage } from "./i18n";
+
+export type ThreadCommandName =
+  | "help"
+  | "status"
+  | "workspace"
+  | "reset"
+  | "stop"
+  | "logs"
+  | "clean";
+
+export interface ThreadCommand {
+  name: ThreadCommandName;
+  args: string[];
+}
+
+const commandAliases: Record<string, ThreadCommandName> = {
+  help: "help",
+  status: "status",
+  workspace: "workspace",
+  reset: "reset",
+  stop: "stop",
+  cancel: "stop",
+  logs: "logs",
+  clean: "clean",
+  cleanup: "clean"
+};
+
+export function parseThreadCommand(content: string): ThreadCommand | undefined {
+  const trimmed = content.trim();
+  const match = trimmed.match(/^(?:\/codex|!codex|codex)(?:\s+(.+))?$/i);
+  if (!match) {
+    return undefined;
+  }
+
+  const parts = (match[1] ?? "help").trim().split(/\s+/).filter(Boolean);
+  const requested = (parts.shift() ?? "help").toLowerCase();
+  const name = commandAliases[requested];
+  if (!name) {
+    return { name: "help", args: [] };
+  }
+
+  return { name, args: parts };
+}
+
+export function formatCommandHelp(language: BotLanguage = "en"): string {
+  return t(language).commandHelp.join("\n");
+}

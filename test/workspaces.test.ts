@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
-import { ensureThreadWorkspace, loadSessionId, saveSessionId } from "../src/workspaces";
+import { ensureThreadWorkspace, getWorkspaceStats, loadSessionId, resetSession, saveSessionId } from "../src/workspaces";
 
 const tempDirs: string[] = [];
 
@@ -23,5 +23,11 @@ describe("thread workspaces", () => {
 
     expect(await loadSessionId(workspace)).toBe("session-1");
     expect(await readFile(workspace.sessionFile, "utf8")).toContain("session-1");
+
+    const stats = await getWorkspaceStats(workspace);
+    expect(stats.files).toBeGreaterThan(0);
+
+    await resetSession(workspace);
+    expect(await loadSessionId(workspace)).toBeUndefined();
   });
 });
