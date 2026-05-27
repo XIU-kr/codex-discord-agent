@@ -114,4 +114,39 @@ describe("parseCodexJsonLine", () => {
 
     expect(state.finalMessages).toEqual(["hello"]);
   });
+
+  test("extracts agent messages nested in event payloads", () => {
+    const state: CodexParseState = { finalMessages: [], deltaMessages: [] };
+
+    parseCodexJsonLine(
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "agent_message",
+          message: "still working"
+        }
+      }),
+      state
+    );
+
+    expect(state.finalMessages).toEqual(["still working"]);
+  });
+
+  test("extracts assistant messages nested in response item payloads", () => {
+    const state: CodexParseState = { finalMessages: [], deltaMessages: [] };
+
+    parseCodexJsonLine(
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "done" }]
+        }
+      }),
+      state
+    );
+
+    expect(state.finalMessages).toEqual(["done"]);
+  });
 });

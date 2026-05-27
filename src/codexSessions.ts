@@ -30,6 +30,22 @@ export async function findLatestCodexSessionIdForWorkspace(
   return latest?.id;
 }
 
+export async function findCodexSessionLogPath(
+  sessionId: string,
+  codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex")
+): Promise<string | undefined> {
+  const sessionsDir = path.join(codexHome, "sessions");
+
+  for await (const filePath of walkJsonlFiles(sessionsDir)) {
+    const meta = await readSessionMeta(filePath);
+    if (meta?.id === sessionId) {
+      return filePath;
+    }
+  }
+
+  return undefined;
+}
+
 async function* walkJsonlFiles(dir: string): AsyncGenerator<string> {
   let entries: import("node:fs").Dirent[];
   try {

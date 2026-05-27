@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import { readFile, stat } from "node:fs/promises";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { findCodexSessionLogPath } from "./codexSessions";
 
 export interface CodexRunOptions {
   codexBin: string;
@@ -59,6 +61,12 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
     deltaMessages: []
   };
   const pendingMessageHandlers: Promise<void>[] = [];
+  const notifiedMessages = new Set<string>();
+  let stopSessionLogWatch: (() => void) | undefined;
+  const sessionLogWatcher = options.sessionId && options.onMessage
+    ? watchSessionLog(options.sessionId, parseCodexJsonLineAndNotify)
+    : undefined;
+  stopSessionLogWatch = sessionLogWatcher?.stop;
 
   let stdoutBuffer = "";
   let stderr = "";
@@ -84,12 +92,14 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
     child.on("close", resolve);
   }).finally(() => {
     options.signal?.removeEventListener("abort", abortHandler);
+    stopSessionLogWatch?.();
   });
 
   if (stdoutBuffer.trim().length > 0) {
     parseCodexJsonLineAndNotify(stdoutBuffer);
   }
 
+  await sessionLogWatcher?.done;
   await Promise.all(pendingMessageHandlers);
 
   if (exitCode !== 0) {
@@ -113,12 +123,78 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
     parseCodexJsonLine(line, parseState);
 
     for (const message of parseState.finalMessages.slice(previousMessageCount)) {
+      if (notifiedMessages.has(message)) {
+        continue;
+      }
+      notifiedMessages.add(message);
       const handlerResult = options.onMessage?.(message);
       if (handlerResult) {
         pendingMessageHandlers.push(Promise.resolve(handlerResult));
       }
     }
   }
+}
+
+function watchSessionLog(
+  sessionId: string,
+  onLine: (line: string) => void
+): { stop: () => void; done: Promise<void> } {
+  let stopped = false;
+  let offset = 0;
+  let buffer = "";
+
+  const done = (async () => {
+    const filePath = await waitForSessionLogPath(sessionId);
+    if (!filePath) {
+      return;
+    }
+
+    offset = (await stat(filePath)).size;
+
+    while (!stopped) {
+      await sleep(1_000);
+      const raw = await readFile(filePath, "utf8").catch(() => "");
+      if (raw.length <= offset) {
+        continue;
+      }
+
+      buffer += raw.slice(offset);
+      offset = raw.length;
+
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        onLine(line);
+      }
+    }
+
+    if (buffer.trim()) {
+      onLine(buffer);
+    }
+  })();
+
+  return {
+    stop: () => {
+      stopped = true;
+    },
+    done
+  };
+}
+
+async function waitForSessionLogPath(sessionId: string): Promise<string | undefined> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const filePath = await findCodexSessionLogPath(sessionId);
+    if (filePath) {
+      return filePath;
+    }
+    await sleep(500);
+  }
+
+  return undefined;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function buildCodexArgs(options: CodexRunOptions): string[] {
@@ -245,6 +321,14 @@ function extractFinalAssistantMessage(value: unknown): string | undefined {
     }
   }
 
+  const payload = value.payload;
+  if (payload) {
+    const nested = extractFinalAssistantMessage(payload);
+    if (nested) {
+      return nested;
+    }
+  }
+
   return undefined;
 }
 
@@ -257,6 +341,7 @@ function extractAssistantMessageRecord(value: unknown): string | undefined {
   const role = typeof value.role === "string" ? value.role.toLowerCase() : "";
   const looksAssistant =
     role === "assistant" ||
+    type === "message" ||
     type === "agent_message" ||
     type === "assistant_message" ||
     type.endsWith(".agent_message") ||
