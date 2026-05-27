@@ -11,6 +11,7 @@ const messages = {
     runStart: "**Codex job started**",
     runComplete: "**Codex job completed**",
     runFailed: "**Codex job failed**",
+    runRestarted: "**Codex job restarted**",
     longResponseFile: "**Codex response is long, so it is attached as a Markdown file.**",
     workspaceConnected: [
       "**Codex workspace connected**",
@@ -27,6 +28,7 @@ const messages = {
     attachmentKindImage: "image",
     attachmentKindFile: "file",
     replyInstruction: "When replying in Discord, prefer concise sections: Summary, Changes, Verification, Next.",
+    combinedPromptIntro: "User messages to handle together:",
     statusTitle: "**Codex status**",
     workspaceTitle: "**Workspace**",
     logsTitle: "**Logs**",
@@ -74,6 +76,7 @@ const messages = {
     runStart: "**Codex 작업 시작**",
     runComplete: "**Codex 작업 완료**",
     runFailed: "**Codex 작업 실패**",
+    runRestarted: "**Codex 작업 재시작**",
     longResponseFile: "**Codex 응답이 길어서 Markdown 파일로 첨부합니다.**",
     workspaceConnected: [
       "**Codex 작업 공간 연결됨**",
@@ -90,6 +93,7 @@ const messages = {
     attachmentKindImage: "이미지",
     attachmentKindFile: "파일",
     replyInstruction: "Discord에 답할 때는 한국어로 답하고, 가능한 한 요약, 변경사항, 검증, 다음 단계 섹션으로 간결하게 답하세요.",
+    combinedPromptIntro: "함께 처리할 사용자 메시지:",
     statusTitle: "**Codex 상태**",
     workspaceTitle: "**작업 공간**",
     logsTitle: "**로그**",

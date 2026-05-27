@@ -37,11 +37,12 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
   options.onSpawn?.(child);
 
   let aborted = false;
+  let closed = false;
   const abortHandler = (): void => {
     aborted = true;
     child.kill("SIGINT");
     setTimeout(() => {
-      if (!child.killed) {
+      if (!closed) {
         child.kill("SIGKILL");
       }
     }, 5_000).unref();
@@ -89,7 +90,10 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
 
   const exitCode = await new Promise<number | null>((resolve, reject) => {
     child.on("error", reject);
-    child.on("close", resolve);
+    child.on("close", (code) => {
+      closed = true;
+      resolve(code);
+    });
   }).finally(() => {
     options.signal?.removeEventListener("abort", abortHandler);
     stopSessionLogWatch?.();
