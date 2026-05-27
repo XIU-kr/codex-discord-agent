@@ -11,6 +11,7 @@ export interface CodexRunOptions {
   imagePaths?: string[];
   signal?: AbortSignal;
   onSpawn?: (child: ChildProcessWithoutNullStreams) => void;
+  onMessage?: (content: string) => void | Promise<void>;
 }
 
 export interface CodexRunResult {
@@ -57,6 +58,7 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
     finalMessages: [],
     deltaMessages: []
   };
+  const pendingMessageHandlers: Promise<void>[] = [];
 
   let stdoutBuffer = "";
   let stderr = "";
@@ -68,7 +70,7 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
     stdoutBuffer = lines.pop() ?? "";
 
     for (const line of lines) {
-      parseCodexJsonLine(line, parseState);
+      parseCodexJsonLineAndNotify(line);
     }
   });
 
@@ -85,8 +87,10 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
   });
 
   if (stdoutBuffer.trim().length > 0) {
-    parseCodexJsonLine(stdoutBuffer, parseState);
+    parseCodexJsonLineAndNotify(stdoutBuffer);
   }
+
+  await Promise.all(pendingMessageHandlers);
 
   if (exitCode !== 0) {
     if (aborted) {
@@ -103,6 +107,18 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
     content,
     sessionId: parseState.sessionId
   };
+
+  function parseCodexJsonLineAndNotify(line: string): void {
+    const previousMessageCount = parseState.finalMessages.length;
+    parseCodexJsonLine(line, parseState);
+
+    for (const message of parseState.finalMessages.slice(previousMessageCount)) {
+      const handlerResult = options.onMessage?.(message);
+      if (handlerResult) {
+        pendingMessageHandlers.push(Promise.resolve(handlerResult));
+      }
+    }
+  }
 }
 
 export function buildCodexArgs(options: CodexRunOptions): string[] {

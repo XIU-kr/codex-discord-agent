@@ -255,6 +255,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       }
     }
 
+    let streamedMessages = 0;
     const result = await runCodex({
       codexBin: config.codexBin,
       model: config.codexModel,
@@ -263,7 +264,11 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       workspaceDir: workspace.dir,
       sessionId,
       imagePaths,
-      signal: state.running?.abortController.signal
+      signal: state.running?.abortController.signal,
+      onMessage: async (content) => {
+        streamedMessages += 1;
+        await sendFormatted(thread, formatCodexResponse(content, config.language), workspace.stateDir);
+      }
     });
 
     if (result.sessionId) {
@@ -283,7 +288,9 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       });
     }
 
-    await sendFormatted(thread, formatCodexResponse(result.content, config.language), workspace.stateDir);
+    if (streamedMessages === 0) {
+      await sendFormatted(thread, formatCodexResponse(result.content, config.language), workspace.stateDir);
+    }
   } catch (error) {
     console.error(`Codex failed for thread ${thread.id}`, error);
     const running = state.running;
