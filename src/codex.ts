@@ -176,6 +176,8 @@ function extractSessionId(value: unknown): string | undefined {
     return undefined;
   }
 
+  const type = buildType(value).toLowerCase();
+
   for (const key of ["session_id", "sessionId", "conversation_id", "conversationId"]) {
     const candidate = value[key];
     if (typeof candidate === "string" && candidate.length > 0) {
@@ -183,11 +185,20 @@ function extractSessionId(value: unknown): string | undefined {
     }
   }
 
-  const type = buildType(value).toLowerCase();
   if (type.includes("session")) {
     const id = value.id;
     if (typeof id === "string" && id.length > 0) {
       return id;
+    }
+
+    const payload = value.payload;
+    if (isRecord(payload)) {
+      for (const key of ["session_id", "sessionId", "id"]) {
+        const candidate = payload[key];
+        if (typeof candidate === "string" && candidate.length > 0) {
+          return candidate;
+        }
+      }
     }
   }
 

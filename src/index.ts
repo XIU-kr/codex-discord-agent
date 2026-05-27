@@ -11,6 +11,7 @@ import {
 } from "discord.js";
 import { saveDiscordAttachments, formatAttachmentPrompt } from "./attachments";
 import { runCodex } from "./codex";
+import { findLatestCodexSessionIdForWorkspace } from "./codexSessions";
 import { loadConfig } from "./config";
 import {
   formatBytes,
@@ -223,7 +224,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
 
   try {
     const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
-    const sessionId = await loadSessionId(workspace);
+    const sessionId = await loadOrRecoverSessionId(workspace);
     const savedAttachments = await saveDiscordAttachments(
       job.message.attachments.values(),
       workspace,
@@ -320,7 +321,7 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
     }
     case "workspace": {
       const stats = await getWorkspaceStats(workspace);
-      const sessionId = await loadSessionId(workspace);
+      const sessionId = await loadOrRecoverSessionId(workspace);
       const content = [
         messages.workspaceTitle,
         `${messages.labels.path}: \`${workspace.dir}\``,
@@ -377,6 +378,22 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
       return;
     }
   }
+}
+
+async function loadOrRecoverSessionId(workspace: Awaited<ReturnType<typeof ensureThreadWorkspace>>): Promise<string | undefined> {
+  const savedSessionId = await loadSessionId(workspace);
+  if (savedSessionId) {
+    return savedSessionId;
+  }
+
+  const recoveredSessionId = await findLatestCodexSessionIdForWorkspace(workspace.dir);
+  if (!recoveredSessionId) {
+    return undefined;
+  }
+
+  await saveSessionId(workspace, recoveredSessionId);
+  console.log(`Recovered Codex session ${recoveredSessionId} for workspace ${workspace.dir}`);
+  return recoveredSessionId;
 }
 
 function startTyping(thread: ThreadChannel): () => void {

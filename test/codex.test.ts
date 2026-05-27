@@ -84,6 +84,23 @@ describe("parseCodexJsonLine", () => {
     expect(state.finalMessages).toEqual(["done"]);
   });
 
+  test("extracts session id from session metadata payload", () => {
+    const state: CodexParseState = { finalMessages: [], deltaMessages: [] };
+
+    parseCodexJsonLine(
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          id: "session-from-meta",
+          cwd: "/tmp/workspace"
+        }
+      }),
+      state
+    );
+
+    expect(state.sessionId).toBe("session-from-meta");
+  });
+
   test("extracts agent message records", () => {
     const state: CodexParseState = { finalMessages: [], deltaMessages: [] };
 
