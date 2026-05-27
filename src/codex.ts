@@ -111,7 +111,8 @@ export function buildCodexArgs(options: CodexRunOptions): string[] {
     "-m",
     options.model,
     "-c",
-    `model_reasoning_effort="${options.reasoningEffort}"`
+    `model_reasoning_effort="${options.reasoningEffort}"`,
+    "--dangerously-bypass-approvals-and-sandbox"
   ];
 
   if (options.sessionId) {
@@ -123,8 +124,6 @@ export function buildCodexArgs(options: CodexRunOptions): string[] {
     ...commonArgs,
     ...buildImageArgs(options.imagePaths),
     "--skip-git-repo-check",
-    "-s",
-    "danger-full-access",
     "-C",
     options.workspaceDir,
     "-"

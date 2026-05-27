@@ -18,9 +18,8 @@ describe("buildCodexArgs", () => {
       "gpt-5.5",
       "-c",
       `model_reasoning_effort="high"`,
+      "--dangerously-bypass-approvals-and-sandbox",
       "--skip-git-repo-check",
-      "-s",
-      "danger-full-access",
       "-C",
       "/tmp/workspace",
       "-"
@@ -52,6 +51,7 @@ describe("buildCodexArgs", () => {
     });
 
     expect(args.slice(0, 3)).toEqual(["exec", "resume", "--json"]);
+    expect(args).toContain("--dangerously-bypass-approvals-and-sandbox");
     expect(args).toContain("session-123");
     expect(args).not.toContain("-C");
   });

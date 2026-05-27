@@ -238,18 +238,21 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       messages.replyInstruction
     ].join("\n");
 
-    const statusMessage = await thread.send({
-      content: formatRunHeader({
-        workspaceDir: workspace.dir,
-        model: config.codexModel,
-        reasoningEffort: config.codexReasoningEffort,
-        sessionId,
-        queued: state.queue.length
-      }, config.language),
-      allowedMentions: { parse: [] }
-    });
-    if (state.running) {
-      state.running.statusMessage = statusMessage;
+    const shouldSendRunStatus = !sessionId;
+    if (shouldSendRunStatus) {
+      const statusMessage = await thread.send({
+        content: formatRunHeader({
+          workspaceDir: workspace.dir,
+          model: config.codexModel,
+          reasoningEffort: config.codexReasoningEffort,
+          sessionId,
+          queued: state.queue.length
+        }, config.language),
+        allowedMentions: { parse: [] }
+      });
+      if (state.running) {
+        state.running.statusMessage = statusMessage;
+      }
     }
 
     const result = await runCodex({
@@ -267,16 +270,18 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       await saveSessionId(workspace, result.sessionId);
     }
 
-    const stats = await getWorkspaceStats(workspace);
-    await statusMessage.edit({
-      content: formatRunComplete({
-        elapsedMs: Date.now() - startedAt,
-        sessionId: result.sessionId ?? sessionId,
-        files: stats.files,
-        bytes: stats.bytes
-      }, config.language),
-      allowedMentions: { parse: [] }
-    });
+    if (state.running?.statusMessage) {
+      const stats = await getWorkspaceStats(workspace);
+      await state.running.statusMessage.edit({
+        content: formatRunComplete({
+          elapsedMs: Date.now() - startedAt,
+          sessionId: result.sessionId ?? sessionId,
+          files: stats.files,
+          bytes: stats.bytes
+        }, config.language),
+        allowedMentions: { parse: [] }
+      });
+    }
 
     await sendFormatted(thread, formatCodexResponse(result.content, config.language), workspace.stateDir);
   } catch (error) {
