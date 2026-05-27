@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE_NAME="codex-discord-agent.service"
+UPDATE_TIMER_NAME="codex-discord-agent-update.timer"
+INSTALL_STATE="/etc/codex-discord-agent/install.env"
+
+if [[ -f "${INSTALL_STATE}" ]]; then
+  # shellcheck disable=SC1090
+  source "${INSTALL_STATE}"
+fi
+
+INSTALL_DIR="${CODEX_DISCORD_AGENT_INSTALL_DIR:-}"
+
+if [[ -z "${INSTALL_DIR}" ]]; then
+  SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+  SCRIPT_DIR="$(cd -- "$(dirname -- "${SCRIPT_PATH}")" && pwd)"
+  if [[ -d "${SCRIPT_DIR}/../scripts" && -f "${SCRIPT_DIR}/../package.json" ]]; then
+    INSTALL_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+  else
+    INSTALL_DIR="${HOME}/.local/share/codex-discord-agent"
+  fi
+fi
+
+as_root() {
+  if [[ "${EUID}" -eq 0 ]]; then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+usage() {
+  cat <<USAGE
+Usage: codex-discord-agent <command>
+
+Commands:
+  start       Start the Discord bot service.
+  stop        Stop the Discord bot service.
+  restart     Restart the Discord bot service.
+  status      Show service status.
+  logs        Follow service logs.
+  update      Check for and apply the latest release update.
+  check       Check whether an update is available.
+  version     Show installed package version.
+  timer       Show auto-update timer status.
+  enable      Enable service start on boot.
+  disable     Disable service start on boot.
+  help        Show this help.
+USAGE
+}
+
+require_install_dir() {
+  if [[ ! -d "${INSTALL_DIR}" ]]; then
+    echo "Install directory not found: ${INSTALL_DIR}" >&2
+    exit 1
+  fi
+}
+
+command="${1:-help}"
+shift || true
+
+case "${command}" in
+  start)
+    as_root systemctl start "${SERVICE_NAME}"
+    ;;
+  stop)
+    as_root systemctl stop "${SERVICE_NAME}"
+    ;;
+  restart)
+    as_root systemctl restart "${SERVICE_NAME}"
+    ;;
+  status)
+    as_root systemctl --no-pager --full status "${SERVICE_NAME}"
+    ;;
+  logs)
+    as_root journalctl -u "${SERVICE_NAME}" -f "$@"
+    ;;
+  update)
+    require_install_dir
+    bash "${INSTALL_DIR}/scripts/update.sh" --apply "$@"
+    ;;
+  check)
+    require_install_dir
+    bash "${INSTALL_DIR}/scripts/update.sh" --check "$@"
+    ;;
+  version)
+    require_install_dir
+    sed -n 's/[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "${INSTALL_DIR}/package.json" | head -n 1
+    ;;
+  timer)
+    as_root systemctl --no-pager --full status "${UPDATE_TIMER_NAME}"
+    ;;
+  enable)
+    as_root systemctl enable "${SERVICE_NAME}"
+    ;;
+  disable)
+    as_root systemctl disable "${SERVICE_NAME}"
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

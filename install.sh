@@ -9,6 +9,7 @@ START_SERVICE="${CODEX_DISCORD_AGENT_START:-0}"
 ENABLE_AUTO_UPDATE="${CODEX_DISCORD_AGENT_AUTO_UPDATE:-1}"
 BUN_BIN="${CODEX_DISCORD_AGENT_BUN_BIN:-}"
 INSTALL_MARKER=".codex-discord-agent-install"
+CLI_BIN="${CODEX_DISCORD_AGENT_CLI_BIN:-/usr/local/bin/codex-discord-agent}"
 
 usage() {
   cat <<USAGE
@@ -22,6 +23,7 @@ Environment variables:
   CODEX_DISCORD_AGENT_START         Start after install, default: ${START_SERVICE}
   CODEX_DISCORD_AGENT_AUTO_UPDATE   Enable update timer, default: ${ENABLE_AUTO_UPDATE}
   CODEX_DISCORD_AGENT_BUN_BIN       Full Bun path, default: auto-detect
+  CODEX_DISCORD_AGENT_CLI_BIN       CLI path, default: ${CLI_BIN}
 USAGE
 }
 
@@ -38,23 +40,62 @@ as_root() {
   fi
 }
 
-install_unzip_if_possible() {
-  if command -v unzip >/dev/null 2>&1; then
+require_root_privileges() {
+  if [[ "${EUID}" -eq 0 ]]; then
+    return
+  fi
+
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "This installer needs root privileges for system packages, systemd, and the CLI command." >&2
+    echo "Install sudo or rerun as root." >&2
+    exit 1
+  fi
+
+  echo "Root privileges are required for dependency and systemd setup."
+  echo "sudo may ask for your password now."
+  sudo -v
+}
+
+install_system_packages() {
+  local packages=("$@")
+  if [[ "${#packages[@]}" -eq 0 ]]; then
     return
   fi
 
   if command -v apt-get >/dev/null 2>&1; then
     as_root apt-get update
-    as_root apt-get install -y unzip
+    as_root apt-get install -y "${packages[@]}"
   elif command -v dnf >/dev/null 2>&1; then
-    as_root dnf install -y unzip
+    as_root dnf install -y "${packages[@]}"
   elif command -v yum >/dev/null 2>&1; then
-    as_root yum install -y unzip
+    as_root yum install -y "${packages[@]}"
   elif command -v apk >/dev/null 2>&1; then
-    as_root apk add unzip
+    as_root apk add "${packages[@]}"
   else
-    echo "unzip is required to install Bun. Install unzip and rerun this installer." >&2
+    echo "Missing required packages: ${packages[*]}" >&2
+    echo "Install them with your system package manager and rerun this installer." >&2
     exit 1
+  fi
+}
+
+ensure_system_dependencies() {
+  local missing=()
+
+  for command_name in curl tar unzip; do
+    if ! command -v "${command_name}" >/dev/null 2>&1; then
+      missing+=("${command_name}")
+    fi
+  done
+
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "systemd is required, but systemctl was not found." >&2
+    echo "Install this bot on a Linux system with systemd enabled." >&2
+    exit 1
+  fi
+
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    echo "Installing missing system packages: ${missing[*]}"
+    install_system_packages "${missing[@]}"
   fi
 }
 
@@ -73,7 +114,7 @@ ensure_bun() {
     return
   fi
 
-  install_unzip_if_possible
+  ensure_system_dependencies
   curl -fsSL https://bun.sh/install | bash
   BUN_BIN="${HOME}/.bun/bin/bun"
 }
@@ -126,6 +167,8 @@ refuse_unknown_nonempty_dir() {
   fi
 }
 
+require_root_privileges
+ensure_system_dependencies
 ensure_bun
 
 TAG="$(resolve_version)"
@@ -194,6 +237,7 @@ else
 fi
 
 scripts/install-systemd-service.sh "${SYSTEMD_ARGS[@]}"
+scripts/install-cli.sh --install-dir "${INSTALL_DIR}" --bin "${CLI_BIN}"
 
 cat <<DONE
 
@@ -207,4 +251,9 @@ Next steps:
 
 Logs:
   sudo journalctl -u codex-discord-agent -f
+
+CLI:
+  codex-discord-agent status
+  codex-discord-agent restart
+  codex-discord-agent update
 DONE

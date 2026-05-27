@@ -15,6 +15,7 @@ UPDATE_TIMER_TARGET="/etc/systemd/system/${UPDATE_TIMER_NAME}"
 SERVICE_USER="${SUDO_USER:-$(id -un)}"
 BUN_BIN=""
 AUTO_UPDATE="keep"
+INSTALL_CLI="1"
 
 as_root() {
   if [[ "${EUID}" -eq 0 ]]; then
@@ -26,7 +27,7 @@ as_root() {
 
 usage() {
   cat <<USAGE
-Usage: scripts/install-systemd-service.sh [--start|--restart|--no-start] [--user USER] [--bun-bin PATH] [--enable-auto-update|--disable-auto-update]
+Usage: scripts/install-systemd-service.sh [--start|--restart|--no-start] [--user USER] [--bun-bin PATH] [--enable-auto-update|--disable-auto-update] [--no-cli]
 
 Installs and enables ${SERVICE_NAME}.
 
@@ -38,6 +39,7 @@ Options:
   --bun-bin   Full path to Bun. Defaults to auto-detection.
   --enable-auto-update   Install and enable the daily update timer.
   --disable-auto-update  Disable the update timer.
+  --no-cli    Do not install the codex-discord-agent command.
 USAGE
 }
 
@@ -49,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --no-start) ACTION="no-start" ;;
     --enable-auto-update) AUTO_UPDATE="enable" ;;
     --disable-auto-update) AUTO_UPDATE="disable" ;;
+    --no-cli) INSTALL_CLI="0" ;;
     --user)
       if [[ $# -lt 2 || "${2:-}" == --* ]]; then
         echo "Missing value for --user." >&2
@@ -157,6 +160,10 @@ as_root systemctl enable "${SERVICE_NAME}"
 
 if [[ "${AUTO_UPDATE}" == "enable" ]]; then
   as_root systemctl enable --now "${UPDATE_TIMER_NAME}"
+fi
+
+if [[ "${INSTALL_CLI}" == "1" && -x "${REPO_DIR}/scripts/install-cli.sh" ]]; then
+  "${REPO_DIR}/scripts/install-cli.sh" --install-dir "${REPO_DIR}"
 fi
 
 case "${ACTION}" in

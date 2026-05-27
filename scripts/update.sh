@@ -93,6 +93,36 @@ current_version() {
   sed -n 's/[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "${INSTALL_DIR}/package.json" | head -n 1
 }
 
+compare_semver() {
+  local left="${1#v}"
+  local right="${2#v}"
+  local left_major left_minor left_patch right_major right_minor right_patch
+  IFS=. read -r left_major left_minor left_patch <<< "${left}"
+  IFS=. read -r right_major right_minor right_patch <<< "${right}"
+
+  left_major="${left_major:-0}"
+  left_minor="${left_minor:-0}"
+  left_patch="${left_patch:-0}"
+  right_major="${right_major:-0}"
+  right_minor="${right_minor:-0}"
+  right_patch="${right_patch:-0}"
+
+  for part in major minor patch; do
+    local left_value="left_${part}"
+    local right_value="right_${part}"
+    if (( ${!left_value} > ${!right_value} )); then
+      printf '1\n'
+      return
+    fi
+    if (( ${!left_value} < ${!right_value} )); then
+      printf -- '-1\n'
+      return
+    fi
+  done
+
+  printf '0\n'
+}
+
 assert_install_dir() {
   if [[ -f "${INSTALL_DIR}/${INSTALL_MARKER}" ]]; then
     return
@@ -119,6 +149,21 @@ resolve_target_tag() {
   else
     printf '%s\n' "${VERSION}"
   fi
+}
+
+apply_git_update() {
+  if [[ -n "$(git -C "${INSTALL_DIR}" status --porcelain)" ]]; then
+    echo "Refusing to update Git checkout with uncommitted changes:" >&2
+    echo "  ${INSTALL_DIR}" >&2
+    exit 1
+  fi
+
+  git -C "${INSTALL_DIR}" fetch --tags origin
+  git -C "${INSTALL_DIR}" checkout --detach "${TARGET_TAG}"
+  run_as_service_user "${BUN_BIN}" install --production --frozen-lockfile
+  as_root "${INSTALL_DIR}/scripts/install-systemd-service.sh" --user "${SERVICE_USER}" --bun-bin "${BUN_BIN}" --enable-auto-update --restart
+  "${INSTALL_DIR}/scripts/install-cli.sh" --install-dir "${INSTALL_DIR}"
+  echo "Updated codex-discord-agent to ${TARGET_TAG}."
 }
 
 version_from_tag() {
@@ -164,6 +209,11 @@ if [[ "${CURRENT_VERSION}" == "${TARGET_VERSION}" ]]; then
   exit 0
 fi
 
+if [[ "$(compare_semver "${TARGET_VERSION}" "${CURRENT_VERSION}")" != "1" ]]; then
+  echo "Target release is not newer than the installed version; refusing to downgrade."
+  exit 0
+fi
+
 if [[ "${MODE}" == "check" ]]; then
   echo "Update available."
   exit 0
@@ -178,6 +228,11 @@ if [[ -z "${BUN_BIN}" ]]; then
     echo "Could not find Bun. Set CODEX_DISCORD_AGENT_BUN_BIN." >&2
     exit 1
   fi
+fi
+
+if [[ -d "${INSTALL_DIR}/.git" && "${CODEX_DISCORD_AGENT_TARBALL_UPDATE:-0}" != "1" ]]; then
+  apply_git_update
+  exit 0
 fi
 
 TMP_DIR="$(mktemp -d)"
@@ -223,5 +278,6 @@ touch "${INSTALL_DIR}/${INSTALL_MARKER}"
 
 run_as_service_user "${BUN_BIN}" install --production --frozen-lockfile
 as_root "${INSTALL_DIR}/scripts/install-systemd-service.sh" --user "${SERVICE_USER}" --bun-bin "${BUN_BIN}" --enable-auto-update --restart
+"${INSTALL_DIR}/scripts/install-cli.sh" --install-dir "${INSTALL_DIR}"
 
 echo "Updated codex-discord-agent to ${TARGET_TAG}."

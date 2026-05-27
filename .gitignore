@@ -3,6 +3,8 @@ dist/
 .env
 .env.*
 !.env.example
+.install.env
+.codex-discord-agent-install
 workspaces/
 *.log
 .DS_Store
