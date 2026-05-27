@@ -18,7 +18,6 @@ import {
   formatError,
   formatRunCompleteEmbed,
   formatRunFailedEmbed,
-  formatRunRestartedEmbed,
   formatRunStartEmbed,
   formatStatusEmbed,
   formatWorkspaceEmbed,
@@ -47,13 +46,18 @@ interface RunningJob {
   startedAt: number;
   abortController: AbortController;
   statusMessage?: Message;
-  interruptedByNewMessage?: boolean;
+  stopRequested?: boolean;
   job: QueuedJob;
 }
 
 interface ThreadState {
   queue: QueuedJob[];
   running?: RunningJob;
+}
+
+interface EnqueueResult {
+  started: boolean;
+  queued: number;
 }
 
 const config = loadConfig();
@@ -123,10 +127,14 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
-  enqueueThreadJob(thread.id, {
+  const enqueueResult = enqueueThreadJob(thread.id, {
     messages: [message],
     prompt
   });
+
+  if (!enqueueResult.started) {
+    await sendThreadStatus(thread, threadStates.get(thread.id));
+  }
 });
 
 await client.login(config.discordToken);
@@ -187,20 +195,22 @@ function getThreadState(threadId: string): ThreadState {
   return created;
 }
 
-function enqueueThreadJob(threadId: string, job: QueuedJob): void {
+function enqueueThreadJob(threadId: string, job: QueuedJob): EnqueueResult {
   const state = getThreadState(threadId);
   state.queue.push(job);
 
   if (state.running) {
-    if (!state.running.interruptedByNewMessage) {
-      state.running.interruptedByNewMessage = true;
-      state.queue.unshift(state.running.job);
-      state.running.abortController.abort();
-    }
-    return;
+    return {
+      started: false,
+      queued: state.queue.length
+    };
   }
 
   void processNextJob(threadId);
+  return {
+    started: true,
+    queued: state.queue.length
+  };
 }
 
 function mergeQueuedJobs(jobs: QueuedJob[]): QueuedJob {
@@ -263,6 +273,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
   const thread = latestMessage.channel as ThreadChannel;
   const stopTyping = startTyping(thread);
   const startedAt = Date.now();
+  let refreshStatus: ReturnType<typeof setInterval> | undefined;
 
   try {
     const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
@@ -280,22 +291,34 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       messages.replyInstruction
     ].join("\n");
 
-    const shouldSendRunStatus = !sessionId;
-    if (shouldSendRunStatus) {
-      const statusMessage = await thread.send({
-        embeds: [formatRunStartEmbed({
-          workspaceDir: workspace.dir,
-          model: config.codexModel,
-          reasoningEffort: config.codexReasoningEffort,
-          sessionId,
+    const statusMessage = await thread.send({
+      embeds: [formatRunStartEmbed({
+        workspaceDir: workspace.dir,
+        model: config.codexModel,
+        reasoningEffort: config.codexReasoningEffort,
+        sessionId,
+        queued: state.queue.length
+      }, config.language)],
+      allowedMentions: { parse: [] }
+    });
+    if (state.running) {
+      state.running.statusMessage = statusMessage;
+    }
+
+    refreshStatus = setInterval(() => {
+      const running = state.running;
+      if (!running?.statusMessage) {
+        return;
+      }
+      void running.statusMessage.edit({
+        embeds: [formatStatusEmbed({
+          running: true,
+          elapsedMs: Date.now() - startedAt,
           queued: state.queue.length
         }, config.language)],
         allowedMentions: { parse: [] }
-      });
-      if (state.running) {
-        state.running.statusMessage = statusMessage;
-      }
-    }
+      }).catch(() => undefined);
+    }, 30_000);
 
     let streamedMessages = 0;
     const result = await runCodex({
@@ -335,17 +358,8 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     }
   } catch (error) {
     const running = state.running;
-    if (running?.interruptedByNewMessage) {
-      console.log(`Codex run interrupted by a newer message for thread ${thread.id}`);
-      if (running.statusMessage) {
-        await running.statusMessage.edit({
-          embeds: [formatRunRestartedEmbed({
-            elapsedMs: Date.now() - startedAt,
-            queued: state.queue.length
-          }, config.language)],
-          allowedMentions: { parse: [] }
-        }).catch(() => undefined);
-      }
+    if (running?.stopRequested) {
+      console.log(`Codex run stopped by user request for thread ${thread.id}`);
       return;
     }
 
@@ -360,6 +374,9 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     }
     await sendFormatted(thread, formatError(error, config.language));
   } finally {
+    if (refreshStatus) {
+      clearInterval(refreshStatus);
+    }
     stopTyping();
   }
 }
@@ -400,6 +417,7 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
       return;
     case "stop":
       if (state?.running) {
+        state.running.stopRequested = true;
         state.running.abortController.abort();
       }
       if (state) {
