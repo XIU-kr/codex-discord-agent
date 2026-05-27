@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily update check for Codex Discord Agent
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=30m
+Unit=codex-discord-agent-update.service
+
+[Install]
+WantedBy=timers.target

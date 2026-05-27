@@ -1,0 +1,24 @@
+[Unit]
+Description=Codex Discord Agent
+Documentation=file:__REPO_DIR__/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+Group=__SERVICE_GROUP__
+WorkingDirectory=__REPO_DIR__
+EnvironmentFile=__REPO_DIR__/.env
+EnvironmentFile=-__REPO_DIR__/.install.env
+Environment=PATH=__SERVICE_PATH__
+ExecStart=__BUN_BIN__ run start
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

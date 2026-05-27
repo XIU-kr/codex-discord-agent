@@ -1,0 +1,17 @@
+[Unit]
+Description=Update Codex Discord Agent
+Documentation=file:__REPO_DIR__/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__REPO_DIR__
+EnvironmentFile=-__REPO_DIR__/.install.env
+Environment=CODEX_DISCORD_AGENT_INSTALL_DIR=__REPO_DIR__
+Environment=CODEX_DISCORD_AGENT_SERVICE_USER=__SERVICE_USER__
+Environment=CODEX_DISCORD_AGENT_BUN_BIN=__BUN_BIN__
+Environment=PATH=__SERVICE_PATH__
+ExecStart=/bin/bash __REPO_DIR__/scripts/update.sh --auto
+StandardOutput=journal
+StandardError=journal
