@@ -27,6 +27,7 @@ import {
   splitDiscordMessage
 } from "./discordFormat";
 import { t } from "./i18n";
+import { isStatusQuestion } from "./statusQuestions";
 import { formatCommandHelp, parseThreadCommand, type ThreadCommand } from "./threadCommands";
 import {
   cleanStaleWorkspaces,
@@ -113,6 +114,12 @@ client.on(Events.MessageCreate, async (message) => {
   }
 
   if (!prompt && message.attachments.size === 0) {
+    return;
+  }
+
+  const state = threadStates.get(thread.id);
+  if (state?.running && isStatusQuestion(prompt)) {
+    await sendThreadStatus(thread, state);
     return;
   }
 
@@ -366,15 +373,7 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
       await thread.send({ content: formatCommandHelp(config.language), allowedMentions: { parse: [] } });
       return;
     case "status": {
-      const running = state?.running;
-      await thread.send({
-        embeds: [formatStatusEmbed({
-          running: Boolean(running),
-          elapsedMs: running ? Date.now() - running.startedAt : undefined,
-          queued: state?.queue.length ?? 0
-        }, config.language)],
-        allowedMentions: { parse: [] }
-      });
+      await sendThreadStatus(thread, state);
       return;
     }
     case "workspace": {
@@ -438,6 +437,18 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
       return;
     }
   }
+}
+
+async function sendThreadStatus(thread: ThreadChannel, state: ThreadState | undefined): Promise<void> {
+  const running = state?.running;
+  await thread.send({
+    embeds: [formatStatusEmbed({
+      running: Boolean(running),
+      elapsedMs: running ? Date.now() - running.startedAt : undefined,
+      queued: state?.queue.length ?? 0
+    }, config.language)],
+    allowedMentions: { parse: [] }
+  });
 }
 
 async function loadOrRecoverSessionId(workspace: Awaited<ReturnType<typeof ensureThreadWorkspace>>): Promise<string | undefined> {
