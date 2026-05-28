@@ -5,6 +5,7 @@ export interface ThreadWorkspace {
   dir: string;
   sessionFile: string;
   jobStateFile: string;
+  panelStateFile: string;
   stateDir: string;
   attachmentsDir: string;
 }
@@ -29,9 +30,15 @@ export interface StoredJobState {
   queued?: number;
 }
 
+export interface PanelState {
+  messageId: string;
+  updatedAt: string;
+}
+
 const stateDirName = ".codex-discord-agent";
 const sessionFileName = "session.json";
 const jobStateFileName = "last-job.json";
+const panelStateFileName = "panel.json";
 const attachmentsDirName = "attachments";
 
 export async function ensureThreadWorkspace(
@@ -49,6 +56,7 @@ export async function ensureThreadWorkspace(
     dir,
     sessionFile: path.join(stateDir, sessionFileName),
     jobStateFile: path.join(stateDir, jobStateFileName),
+    panelStateFile: path.join(stateDir, panelStateFileName),
     stateDir,
     attachmentsDir
   };
@@ -109,6 +117,26 @@ export async function loadJobState(workspace: ThreadWorkspace): Promise<StoredJo
 
 export async function saveJobState(workspace: ThreadWorkspace, state: StoredJobState): Promise<void> {
   await writeFile(workspace.jobStateFile, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
+export async function loadPanelState(workspace: ThreadWorkspace): Promise<PanelState | undefined> {
+  try {
+    const raw = await readFile(workspace.panelStateFile, "utf8");
+    const state = JSON.parse(raw) as PanelState;
+    return typeof state.messageId === "string" && state.messageId.length > 0 ? state : undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+export async function savePanelState(workspace: ThreadWorkspace, messageId: string): Promise<void> {
+  await writeFile(workspace.panelStateFile, `${JSON.stringify({
+    messageId,
+    updatedAt: new Date().toISOString()
+  }, null, 2)}\n`, "utf8");
 }
 
 export async function markJobInterrupted(workspace: ThreadWorkspace): Promise<StoredJobState | undefined> {

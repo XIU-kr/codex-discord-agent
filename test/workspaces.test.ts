@@ -6,11 +6,13 @@ import {
   ensureThreadWorkspace,
   getWorkspaceStats,
   loadJobState,
+  loadPanelState,
   loadSessionId,
   loadSessionState,
   markJobInterrupted,
   resetSession,
   saveJobState,
+  savePanelState,
   saveSessionId
 } from "../src/workspaces";
 
@@ -60,5 +62,15 @@ describe("thread workspaces", () => {
     expect((await loadJobState(workspace))?.status).toBe("running");
     expect((await markJobInterrupted(workspace))?.status).toBe("interrupted");
     expect((await loadJobState(workspace))?.phase).toBe("interrupted");
+  });
+
+  test("persists control panel message ids", async () => {
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "codex-discord-agent-"));
+    tempDirs.push(baseDir);
+
+    const workspace = await ensureThreadWorkspace(baseDir, "guild", "thread");
+    await savePanelState(workspace, "message-123");
+
+    expect((await loadPanelState(workspace))?.messageId).toBe("message-123");
   });
 });

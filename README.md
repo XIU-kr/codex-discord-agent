@@ -83,6 +83,7 @@ which codex
    - Send Messages
    - Send Messages in Threads
    - Read Message History
+   - Manage Messages
    - Create Public Threads
    - Create Private Threads
    - Use Public Threads
@@ -261,7 +262,7 @@ Inside a managed thread:
 /codex clean
 ```
 
-Status messages also include Discord buttons for refresh, thread settings, queue management, doctor checks, stopping the current job, stopping all queued work, workspace information, logs, and retry actions after failures.
+The bot creates one pinned control panel per managed thread when the thread is created or first used. Status messages also include Discord buttons for refresh, thread settings, queue management, doctor checks, stopping the current job, stopping all queued work, workspace information, logs, and retry actions after failures.
 If the service restarts during a job, the bot marks the last running job as interrupted the next time the thread is used or checked. In-memory queued jobs are not restored after a restart.
 
 ## systemd

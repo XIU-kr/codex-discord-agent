@@ -51,10 +51,12 @@ import {
   cleanStaleWorkspaces,
   ensureThreadWorkspace,
   getWorkspaceStats,
+  loadPanelState,
   loadSessionState,
   markJobInterrupted,
   resetSession,
   saveJobState,
+  savePanelState,
   saveSessionId,
   type ThreadWorkspace
 } from "./workspaces";
@@ -133,7 +135,7 @@ client.on(Events.ThreadCreate, async (thread) => {
 
   try {
     await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
-    await sendControlPanel(thread, threadStates.get(thread.id));
+    await ensureControlPanel(thread, threadStates.get(thread.id));
     console.log(`Prepared workspace for thread ${thread.id}`);
   } catch (error) {
     console.error(`Failed to prepare workspace for thread ${thread.id}`, error);
@@ -156,6 +158,7 @@ client.on(Events.MessageCreate, async (message) => {
     }, discordApiOptions(), { action: "message.denied", threadId: thread.id });
     return;
   }
+  await ensureControlPanel(thread, threadStates.get(thread.id));
   await notifyInterruptedIfAny(thread);
 
   const command = parseThreadCommand(prompt);
@@ -600,7 +603,7 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
       });
       return;
     case "panel":
-      await sendControlPanel(thread, state);
+      await ensureControlPanel(thread, state);
       return;
     case "settings":
       await sendThreadSettings(thread);
@@ -1129,7 +1132,8 @@ async function sendThreadStatus(thread: ThreadChannel, state: ThreadState | unde
   }, discordApiOptions(), { action: "status.send", threadId: thread.id, jobId: state?.running?.id, phase: state?.running?.phase });
 }
 
-async function sendControlPanel(thread: ThreadChannel, state: ThreadState | undefined): Promise<void> {
+async function ensureControlPanel(thread: ThreadChannel, state: ThreadState | undefined): Promise<Message> {
+  const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
   const embed = state?.running
     ? formatControlPanelEmbed({
       running: true,
@@ -1147,11 +1151,74 @@ async function sendControlPanel(thread: ThreadChannel, state: ThreadState | unde
       warning: buildOperationalWarning()
     }, config.language);
 
-  await sendThreadMessage(thread, {
+  const options = {
     embeds: [embed],
     components: state?.running ? runningComponents() : idleComponents(),
     allowedMentions: { parse: [] }
-  }, discordApiOptions(), { action: "panel.send", threadId: thread.id, jobId: state?.running?.id, phase: state?.running?.phase });
+  };
+  const storedPanel = await loadPanelState(workspace);
+  if (storedPanel) {
+    const existing = await thread.messages.fetch(storedPanel.messageId).catch(() => undefined);
+    if (existing) {
+      const updated = await editDiscordMessage(existing, options, discordApiOptions(), {
+        action: "panel.edit",
+        threadId: thread.id,
+        jobId: state?.running?.id,
+        phase: state?.running?.phase
+      });
+      await pinControlPanel(updated);
+      return updated;
+    }
+  }
+
+  const pinnedPanel = await findPinnedControlPanel(thread);
+  if (pinnedPanel) {
+    const updated = await editDiscordMessage(pinnedPanel, options, discordApiOptions(), {
+      action: "panel.pinned.edit",
+      threadId: thread.id,
+      jobId: state?.running?.id,
+      phase: state?.running?.phase
+    });
+    await savePanelState(workspace, updated.id);
+    await pinControlPanel(updated);
+    return updated;
+  }
+
+  const created = await sendThreadMessage(thread, options, discordApiOptions(), {
+    action: "panel.send",
+    threadId: thread.id,
+    jobId: state?.running?.id,
+    phase: state?.running?.phase
+  });
+  await savePanelState(workspace, created.id);
+  await pinControlPanel(created);
+  return created;
+}
+
+async function findPinnedControlPanel(thread: ThreadChannel): Promise<Message | undefined> {
+  const pinned = await thread.messages.fetchPinned().catch(() => undefined);
+  const titles = new Set(["Codex control panel", "Codex 컨트롤 패널", plainPanelTitle()]);
+  return pinned?.find((message) =>
+    message.author.id === client.user?.id &&
+    message.embeds.some((embed) => embed.title ? titles.has(embed.title) : false)
+  );
+}
+
+async function pinControlPanel(message: Message): Promise<void> {
+  if (message.pinned) {
+    return;
+  }
+  await message.pin("Codex control panel").catch((error) => {
+    console.warn("Failed to pin Codex control panel", {
+      threadId: message.channelId,
+      messageId: message.id,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  });
+}
+
+function plainPanelTitle(): string {
+  return messages.panelTitle.replace(/^\*\*/, "").replace(/\*\*$/, "");
 }
 
 async function sendThreadSettings(thread: ThreadChannel): Promise<void> {
