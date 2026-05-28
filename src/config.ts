@@ -9,6 +9,7 @@ export interface AppConfig {
   baseWorkspaceDir: string;
   codexBin: string;
   codexModel: string;
+  codexModelChoices: string[];
   codexReasoningEffort: string;
   codexRunTimeoutMs?: number;
   codexIdleTimeoutMs?: number;
@@ -43,6 +44,11 @@ function optionalListEnv(name: string): string[] {
     .filter(Boolean);
 }
 
+function optionalChoicesEnv(name: string, fallback: string): string[] {
+  const values = optionalListEnv(name);
+  return Array.from(new Set([fallback, ...values].filter(Boolean)));
+}
+
 function optionalNumberEnv(name: string, fallback: number): number {
   const raw = optionalEnv(name, String(fallback));
   const parsed = Number(raw);
@@ -72,6 +78,7 @@ export function loadConfig(): AppConfig {
     baseWorkspaceDir: path.resolve(optionalEnv("BASE_WORKSPACE_DIR", "./workspaces")),
     codexBin: optionalEnv("CODEX_BIN", "codex"),
     codexModel: optionalEnv("CODEX_MODEL", "gpt-5.5"),
+    codexModelChoices: optionalChoicesEnv("CODEX_MODEL_CHOICES", optionalEnv("CODEX_MODEL", "gpt-5.5")),
     codexReasoningEffort: optionalEnv("CODEX_REASONING_EFFORT", "high"),
     codexRunTimeoutMs: optionalSecondsEnv("CODEX_RUN_TIMEOUT_SECONDS", 45 * 60),
     codexIdleTimeoutMs: optionalSecondsEnv("CODEX_IDLE_TIMEOUT_SECONDS", 10 * 60),

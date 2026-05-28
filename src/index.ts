@@ -11,6 +11,8 @@ import {
   type ButtonInteraction,
   GatewayIntentBits,
   type Message,
+  StringSelectMenuBuilder,
+  type StringSelectMenuInteraction,
   type ThreadChannel
 } from "discord.js";
 import { saveDiscordAttachments, formatAttachmentPrompt, type AttachmentSaveResult } from "./attachments";
@@ -31,6 +33,7 @@ import {
   formatRunFailedEmbed,
   formatRunStartEmbed,
   formatRunStoppedEmbed,
+  formatSettingsEmbed,
   formatStatusEmbed,
   formatWorkspaceEmbed,
   prefixChunks,
@@ -85,6 +88,13 @@ interface ThreadState {
   running?: RunningJob;
 }
 
+interface ThreadSettings {
+  model: string;
+  reasoningEffort: string;
+  hideWorkspacePaths: boolean;
+  includeAttachments: boolean;
+}
+
 interface EnqueueResult {
   started: boolean;
   queued: number;
@@ -94,6 +104,7 @@ const config = loadConfig();
 const messages = t(config.language);
 const threadStates = new Map<string, ThreadState>();
 const retryableJobs = new Map<string, QueuedJob>();
+const threadSettings = new Map<string, ThreadSettings>();
 
 const client = new Client({
   intents: [
@@ -167,7 +178,7 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isButton() || !interaction.guild || !interaction.channel?.isThread()) {
+  if ((!interaction.isButton() && !interaction.isStringSelectMenu()) || !interaction.guild || !interaction.channel?.isThread()) {
     return;
   }
   const thread = interaction.channel as ThreadChannel;
@@ -181,7 +192,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
     });
     return;
   }
-  await handleButtonInteraction(interaction, thread);
+  if (interaction.isButton()) {
+    await handleButtonInteraction(interaction, thread);
+    return;
+  }
+  await handleSelectMenuInteraction(interaction, thread);
 });
 
 await client.login(config.discordToken);
@@ -218,14 +233,14 @@ async function isAllowed(message: Message): Promise<boolean> {
   return isUserAllowed(message.guild, message.author.id, message.member);
 }
 
-async function isInteractionAllowed(interaction: ButtonInteraction): Promise<boolean> {
+async function isInteractionAllowed(interaction: ButtonInteraction | StringSelectMenuInteraction): Promise<boolean> {
   return isUserAllowed(interaction.guild, interaction.user.id, interaction.member);
 }
 
 async function isUserAllowed(
   guild: Message["guild"],
   userId: string,
-  memberLike: Message["member"] | ButtonInteraction["member"]
+  memberLike: Message["member"] | ButtonInteraction["member"] | StringSelectMenuInteraction["member"]
 ): Promise<boolean> {
   if (config.allowedUserIds.length === 0 && config.allowedRoleIds.length === 0) {
     return true;
@@ -285,6 +300,22 @@ function getThreadState(threadId: string): ThreadState {
 
   const created: ThreadState = { queue: [] };
   threadStates.set(threadId, created);
+  return created;
+}
+
+function getThreadSettings(threadId: string): ThreadSettings {
+  const existing = threadSettings.get(threadId);
+  if (existing) {
+    return existing;
+  }
+
+  const created: ThreadSettings = {
+    model: config.codexModel,
+    reasoningEffort: config.codexReasoningEffort,
+    hideWorkspacePaths: config.hideWorkspacePaths,
+    includeAttachments: true
+  };
+  threadSettings.set(threadId, created);
   return created;
 }
 
@@ -391,6 +422,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
 
   try {
     const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
+    const settings = getThreadSettings(thread.id);
     if (state.running) {
       state.running.workspace = workspace;
     }
@@ -400,15 +432,17 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     await persistRunningJob(state, "attachments", "Saving Discord attachments.");
     const attachmentResults: AttachmentSaveResult[] = [];
     let usedAttachmentBytes = 0;
-    for (const message of job.messages) {
-      const result = await saveDiscordAttachments(message.attachments.values(), workspace, message.id, {
-        timeoutMs: config.attachmentDownloadTimeoutMs,
-        maxFileBytes: config.attachmentMaxFileBytes,
-        maxTotalBytes: config.attachmentMaxTotalBytes,
-        usedBytes: usedAttachmentBytes
-      });
-      usedAttachmentBytes = result.usedBytes;
-      attachmentResults.push(result);
+    if (settings.includeAttachments) {
+      for (const message of job.messages) {
+        const result = await saveDiscordAttachments(message.attachments.values(), workspace, message.id, {
+          timeoutMs: config.attachmentDownloadTimeoutMs,
+          maxFileBytes: config.attachmentMaxFileBytes,
+          maxTotalBytes: config.attachmentMaxTotalBytes,
+          usedBytes: usedAttachmentBytes
+        });
+        usedAttachmentBytes = result.usedBytes;
+        attachmentResults.push(result);
+      }
     }
     const savedAttachments = attachmentResults.flatMap((result) => result.saved);
     const failedAttachments = attachmentResults.flatMap((result) => result.failed);
@@ -423,9 +457,9 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     const statusMessage = await sendThreadMessage(thread, {
       embeds: [formatRunStartEmbed({
         jobId: job.id,
-        workspaceDir: displayWorkspacePath(workspace.dir),
-        model: config.codexModel,
-        reasoningEffort: config.codexReasoningEffort,
+        workspaceDir: displayWorkspacePath(thread.id, workspace.dir),
+        model: settings.model,
+        reasoningEffort: settings.reasoningEffort,
         sessionId,
         queued: state.queue.length,
         warning: buildOperationalWarning()
@@ -458,8 +492,8 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     await persistRunningJob(state, "codex", "Codex process started.");
     const result = await runCodex({
       codexBin: config.codexBin,
-      model: config.codexModel,
-      reasoningEffort: config.codexReasoningEffort,
+      model: settings.model,
+      reasoningEffort: settings.reasoningEffort,
       prompt,
       workspaceDir: workspace.dir,
       sessionId,
@@ -563,6 +597,9 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
     case "panel":
       await sendControlPanel(thread, state);
       return;
+    case "settings":
+      await sendThreadSettings(thread);
+      return;
     case "status": {
       await sendThreadStatus(thread, state);
       return;
@@ -572,7 +609,7 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
       const sessionId = await loadOrRecoverSessionId(workspace);
       await sendThreadMessage(thread, {
         embeds: [formatWorkspaceEmbed({
-          path: displayWorkspacePath(workspace.dir),
+          path: displayWorkspacePath(thread.id, workspace.dir),
           sessionId,
           files: stats.files,
           bytes: stats.bytes,
@@ -676,6 +713,13 @@ async function handleButtonInteraction(interaction: ButtonInteraction, thread: T
         threadId: thread.id
       });
       return;
+    case "codex:settings":
+      await sendThreadSettings(thread);
+      await replyToInteraction(interaction, { content: messages.statusRefreshed, ephemeral: true }, discordApiOptions(), {
+        action: "button.settings",
+        threadId: thread.id
+      });
+      return;
     case "codex:stop-current":
       if (state?.running) {
         state.running.stopRequested = true;
@@ -729,6 +773,37 @@ async function handleButtonInteraction(interaction: ButtonInteraction, thread: T
   }
 }
 
+async function handleSelectMenuInteraction(interaction: StringSelectMenuInteraction, thread: ThreadChannel): Promise<void> {
+  const settings = getThreadSettings(thread.id);
+  const value = interaction.values[0];
+  if (!value) {
+    return;
+  }
+
+  switch (interaction.customId) {
+    case "codex:settings:model":
+      settings.model = value;
+      break;
+    case "codex:settings:reasoning":
+      settings.reasoningEffort = value;
+      break;
+    case "codex:settings:paths":
+      settings.hideWorkspacePaths = value === "hide";
+      break;
+    case "codex:settings:attachments":
+      settings.includeAttachments = value === "include";
+      break;
+    default:
+      return;
+  }
+
+  await interaction.update({
+    embeds: [formatSettingsEmbed(settings, config.language)],
+    components: settingsComponents(settings),
+    allowedMentions: { parse: [] }
+  });
+}
+
 async function retryLastJob(thread: ThreadChannel, resetFirst: boolean): Promise<void> {
   const job = retryableJobs.get(thread.id);
   if (!job) {
@@ -757,6 +832,9 @@ function runningComponents(): ActionRowBuilder<ButtonBuilder>[] {
       new ButtonBuilder().setCustomId("codex:stop-all").setLabel(messages.actions.stopAll).setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId("codex:workspace").setLabel(messages.actions.workspace).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("codex:settings").setLabel(messages.actions.settings).setStyle(ButtonStyle.Secondary)
     )
   ];
 }
@@ -766,6 +844,7 @@ function failedComponents(): ActionRowBuilder<ButtonBuilder>[] {
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId("codex:retry").setLabel(messages.actions.retry).setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("codex:reset-retry").setLabel(messages.actions.resetRetry).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:settings").setLabel(messages.actions.settings).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
     )
   ];
@@ -775,8 +854,52 @@ function idleComponents(): ActionRowBuilder<ButtonBuilder>[] {
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId("codex:refresh").setLabel(messages.actions.refresh).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:settings").setLabel(messages.actions.settings).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:workspace").setLabel(messages.actions.workspace).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
+    )
+  ];
+}
+
+function settingsComponents(settings: ThreadSettings): ActionRowBuilder<StringSelectMenuBuilder>[] {
+  return [
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("codex:settings:model")
+        .setPlaceholder(messages.labels.model)
+        .addOptions(config.codexModelChoices.slice(0, 25).map((model) => ({
+          label: model.slice(0, 100),
+          value: model,
+          default: model === settings.model
+        })))
+    ),
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("codex:settings:reasoning")
+        .setPlaceholder(messages.labels.reasoning)
+        .addOptions(["minimal", "low", "medium", "high"].map((effort) => ({
+          label: effort,
+          value: effort,
+          default: effort === settings.reasoningEffort
+        })))
+    ),
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("codex:settings:paths")
+        .setPlaceholder(messages.labels.hidePaths)
+        .addOptions([
+          { label: messages.values.disabled, value: "show", default: !settings.hideWorkspacePaths },
+          { label: messages.values.enabled, value: "hide", default: settings.hideWorkspacePaths }
+        ])
+    ),
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("codex:settings:attachments")
+        .setPlaceholder(messages.labels.attachments)
+        .addOptions([
+          { label: messages.values.enabled, value: "include", default: settings.includeAttachments },
+          { label: messages.values.disabled, value: "ignore", default: !settings.includeAttachments }
+        ])
     )
   ];
 }
@@ -868,8 +991,8 @@ function isAllowlistOpen(): boolean {
   return config.allowedUserIds.length === 0 && config.allowedRoleIds.length === 0;
 }
 
-function displayWorkspacePath(workspaceDir: string): string {
-  return config.hideWorkspacePaths ? "[hidden]" : workspaceDir;
+function displayWorkspacePath(threadId: string, workspaceDir: string): string {
+  return getThreadSettings(threadId).hideWorkspacePaths ? "[hidden]" : workspaceDir;
 }
 
 function escapeMarkdown(value: string): string {
@@ -910,6 +1033,15 @@ async function sendControlPanel(thread: ThreadChannel, state: ThreadState | unde
     components: state?.running ? runningComponents() : idleComponents(),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "panel.send", threadId: thread.id, jobId: state?.running?.id, phase: state?.running?.phase });
+}
+
+async function sendThreadSettings(thread: ThreadChannel): Promise<void> {
+  const settings = getThreadSettings(thread.id);
+  await sendThreadMessage(thread, {
+    embeds: [formatSettingsEmbed(settings, config.language)],
+    components: settingsComponents(settings),
+    allowedMentions: { parse: [] }
+  }, discordApiOptions(), { action: "settings.send", threadId: thread.id });
 }
 
 async function loadOrRecoverSessionId(workspace: Awaited<ReturnType<typeof ensureThreadWorkspace>>): Promise<string | undefined> {

@@ -38,6 +38,8 @@ const messages = {
     logsIntro: "Run one of these commands on the server to inspect logs.",
     panelTitle: "**Codex control panel**",
     panelIntro: "Use the controls below to inspect and manage this thread.",
+    settingsTitle: "**Thread settings**",
+    settingsUpdated: "Thread settings updated.",
     labels: {
       job: "Job",
       phase: "Phase",
@@ -54,7 +56,9 @@ const messages = {
       running: "Running",
       path: "Path",
       size: "Size",
-      updated: "Updated"
+      updated: "Updated",
+      hidePaths: "Hide paths",
+      attachments: "Attachments"
     },
     phases: {
       queued: "Queued",
@@ -75,11 +79,14 @@ const messages = {
       none: "none",
       yes: "yes",
       no: "no",
+      enabled: "enabled",
+      disabled: "disabled",
       files: (count: number) => `${count} files`
     },
     actions: {
       refresh: "Refresh status",
       panel: "Control panel",
+      settings: "Settings",
       stopCurrent: "Stop current",
       stopAll: "Stop all",
       workspace: "Workspace",
@@ -103,6 +110,7 @@ const messages = {
       "**Codex commands**",
       "`/codex status` - Show this thread's job status.",
       "`/codex panel` - Show the control panel.",
+      "`/codex settings` - Change this thread's model and display settings.",
       "`/codex workspace` - Show workspace path and size.",
       "`/codex reset` - Start a fresh Codex session for this thread.",
       "`/codex stop` - Stop the running Codex job and clear the queue.",
@@ -145,6 +153,8 @@ const messages = {
     logsIntro: "서버에서 다음 명령으로 로그를 확인하세요.",
     panelTitle: "**Codex 컨트롤 패널**",
     panelIntro: "아래 컨트롤로 이 스레드를 확인하고 관리합니다.",
+    settingsTitle: "**스레드 설정**",
+    settingsUpdated: "스레드 설정을 변경했습니다.",
     labels: {
       job: "작업",
       phase: "단계",
@@ -161,7 +171,9 @@ const messages = {
       running: "실행 중",
       path: "경로",
       size: "크기",
-      updated: "갱신"
+      updated: "갱신",
+      hidePaths: "경로 숨김",
+      attachments: "첨부"
     },
     phases: {
       queued: "대기 중",
@@ -182,11 +194,14 @@ const messages = {
       none: "없음",
       yes: "예",
       no: "아니요",
+      enabled: "켜짐",
+      disabled: "꺼짐",
       files: (count: number) => `${count}개 파일`
     },
     actions: {
       refresh: "상태 새로고침",
       panel: "컨트롤 패널",
+      settings: "설정",
       stopCurrent: "현재 작업 중단",
       stopAll: "전체 중단",
       workspace: "작업공간",
@@ -210,6 +225,7 @@ const messages = {
       "**Codex 명령어**",
       "`/codex status` - 현재 스레드의 작업 상태를 봅니다.",
       "`/codex panel` - 컨트롤 패널을 봅니다.",
+      "`/codex settings` - 이 스레드의 모델과 표시 설정을 바꿉니다.",
       "`/codex workspace` - 작업 공간 경로와 크기를 봅니다.",
       "`/codex reset` - 현재 스레드의 Codex 세션을 새로 시작합니다.",
       "`/codex stop` - 실행 중인 Codex 작업을 중단하고 대기열을 비웁니다.",

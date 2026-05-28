@@ -3,6 +3,7 @@ import { t, type BotLanguage } from "./i18n";
 export type ThreadCommandName =
   | "help"
   | "panel"
+  | "settings"
   | "status"
   | "workspace"
   | "reset"
@@ -20,6 +21,8 @@ const commandAliases: Record<string, ThreadCommandName> = {
   help: "help",
   panel: "panel",
   controls: "panel",
+  settings: "settings",
+  config: "settings",
   status: "status",
   workspace: "workspace",
   reset: "reset",

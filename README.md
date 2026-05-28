@@ -166,6 +166,7 @@ Optional values:
 BASE_WORKSPACE_DIR=./workspaces
 CODEX_BIN=codex
 CODEX_MODEL=gpt-5.5
+CODEX_MODEL_CHOICES=
 CODEX_REASONING_EFFORT=high
 CODEX_RUN_TIMEOUT_SECONDS=2700
 CODEX_IDLE_TIMEOUT_SECONDS=600
@@ -189,6 +190,7 @@ Configuration reference:
 - `BASE_WORKSPACE_DIR`: root directory for thread workspaces.
 - `CODEX_BIN`: Codex CLI command or full path.
 - `CODEX_MODEL`: Codex model. Default: `gpt-5.5`.
+- `CODEX_MODEL_CHOICES`: comma-separated model choices shown in Discord thread settings. Empty means only `CODEX_MODEL`.
 - `CODEX_REASONING_EFFORT`: reasoning effort. Default: `high`.
 - `CODEX_RUN_TIMEOUT_SECONDS`: maximum wall-clock time for one Codex job. Default: `2700`. Set `0` to disable.
 - `CODEX_IDLE_TIMEOUT_SECONDS`: maximum time to wait with no Codex output before stopping the job. Default: `600`. Set `0` to disable.
@@ -246,7 +248,9 @@ Inside a managed thread:
 
 ```text
 /codex help
+/codex panel
 /codex status
+/codex settings
 /codex workspace
 /codex reset
 /codex stop
@@ -255,7 +259,7 @@ Inside a managed thread:
 /codex clean
 ```
 
-Status messages also include Discord buttons for refresh, stopping the current job, stopping all queued work, workspace information, logs, and retry actions after failures.
+Status messages also include Discord buttons for refresh, thread settings, stopping the current job, stopping all queued work, workspace information, logs, and retry actions after failures.
 If the service restarts during a job, the bot marks the last running job as interrupted the next time the thread is used or checked. In-memory queued jobs are not restored after a restart.
 
 ## systemd

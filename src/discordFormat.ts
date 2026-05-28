@@ -352,6 +352,34 @@ export function formatWorkspaceEmbed(options: {
   };
 }
 
+export function formatSettingsEmbed(options: {
+  model: string;
+  reasoningEffort: string;
+  hideWorkspacePaths: boolean;
+  includeAttachments: boolean;
+}, language: BotLanguage = "en"): DiscordEmbed {
+  const messages = t(language);
+  return {
+    title: plainTitle(messages.settingsTitle),
+    color: embedColors.neutral,
+    timestamp: new Date().toISOString(),
+    fields: [
+      { name: messages.labels.model, value: code(options.model), inline: true },
+      { name: messages.labels.reasoning, value: code(options.reasoningEffort), inline: true },
+      {
+        name: messages.labels.hidePaths,
+        value: code(options.hideWorkspacePaths ? messages.values.enabled : messages.values.disabled),
+        inline: true
+      },
+      {
+        name: messages.labels.attachments,
+        value: code(options.includeAttachments ? messages.values.enabled : messages.values.disabled),
+        inline: true
+      }
+    ]
+  };
+}
+
 export function formatDuration(ms: number, language: BotLanguage = "en"): string {
   const seconds = Math.max(0, Math.round(ms / 1000));
   if (language === "ko") {
