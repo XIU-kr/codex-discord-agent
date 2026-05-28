@@ -19,7 +19,7 @@ import {
   type ThreadChannel
 } from "discord.js";
 import { saveDiscordAttachments, formatAttachmentPrompt, type AttachmentSaveResult } from "./attachments";
-import { runCodex } from "./codex";
+import { runCodex, type CodexUsage } from "./codex";
 import { findLatestCodexSessionIdForWorkspace } from "./codexSessions";
 import { loadConfig } from "./config";
 import { runDoctor } from "./doctor";
@@ -41,6 +41,7 @@ import {
   formatRunStoppedEmbed,
   formatSettingsEmbed,
   formatStatusEmbed,
+  formatUsageEmbed,
   formatWorkspaceEmbed,
   prefixChunks,
   shouldSendAsFile,
@@ -56,11 +57,13 @@ import {
   getWorkspaceStats,
   loadPanelState,
   loadSessionState,
+  loadUsageState,
   markJobInterrupted,
   resetSession,
   saveJobState,
   savePanelState,
   saveSessionId,
+  saveUsageState,
   type ThreadWorkspace
 } from "./workspaces";
 
@@ -88,6 +91,7 @@ interface RunningJob {
   statusMessage?: Message;
   stopRequested?: boolean;
   workspace?: ThreadWorkspace;
+  usage?: CodexUsage;
   job: QueuedJob;
 }
 
@@ -134,6 +138,10 @@ const slashCommandDescriptions: Record<ThreadCommandName, { en: string; ko: stri
   doctor: {
     en: "Check Codex, auth, workspace, and access configuration.",
     ko: "Codex, 인증, 작업 공간, 접근 설정을 점검합니다."
+  },
+  usage: {
+    en: "Show this thread's latest Codex token usage.",
+    ko: "이 스레드의 최근 Codex 토큰 사용량을 봅니다."
   },
   status: {
     en: "Show this thread's job status.",
@@ -600,6 +608,14 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       onEvent: (event) => {
         void persistRunningJob(state, event.phase, event.summary);
       },
+      onUsage: (usage) => {
+        if (state.running) {
+          state.running.usage = usage;
+        }
+        void saveUsageState(workspace, usage).catch((error) => {
+          console.warn("Failed to persist Codex usage state", error);
+        });
+      },
       onMessage: async (content) => {
         streamedMessages += 1;
         await persistRunningJob(state, "sending", "Sending Codex response to Discord.");
@@ -609,6 +625,9 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
 
     if (result.sessionId) {
       await saveSessionId(workspace, result.sessionId, result.sessionLogPath ?? sessionState?.sessionLogPath);
+    }
+    if (result.usage) {
+      await saveUsageState(workspace, result.usage);
     }
     if (streamedMessages === 0) {
       await persistRunningJob(state, "sending", "Sending final Codex response to Discord.");
@@ -624,7 +643,8 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
           elapsedMs: Date.now() - startedAt,
           sessionId: result.sessionId ?? sessionId,
           files: stats.files,
-          bytes: stats.bytes
+          bytes: stats.bytes,
+          usage: result.usage ?? state.running.usage
         }, config.language)],
         components: idleComponents(),
         allowedMentions: { parse: [] }
@@ -694,6 +714,9 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
       return;
     case "doctor":
       await sendThreadDoctor(thread);
+      return;
+    case "usage":
+      await sendThreadUsage(thread, state);
       return;
     case "status": {
       await sendThreadStatus(thread, state);
@@ -826,6 +849,13 @@ async function handleButtonInteraction(interaction: ButtonInteraction, thread: T
       await sendThreadDoctor(thread);
       await replyToInteraction(interaction, { content: messages.statusRefreshed, ephemeral: true }, discordApiOptions(), {
         action: "button.doctor",
+        threadId: thread.id
+      });
+      return;
+    case "codex:usage":
+      await sendThreadUsage(thread, state);
+      await replyToInteraction(interaction, { content: messages.statusRefreshed, ephemeral: true }, discordApiOptions(), {
+        action: "button.usage",
         threadId: thread.id
       });
       return;
@@ -1022,6 +1052,7 @@ function runningComponents(): ActionRowBuilder<ButtonBuilder>[] {
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId("codex:settings").setLabel(messages.actions.settings).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:queue").setLabel(messages.actions.queue).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:usage").setLabel(messages.actions.usage).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:doctor").setLabel(messages.actions.doctor).setStyle(ButtonStyle.Secondary)
     )
   ];
@@ -1036,6 +1067,7 @@ function failedComponents(): ActionRowBuilder<ButtonBuilder>[] {
       new ButtonBuilder().setCustomId("codex:queue").setLabel(messages.actions.queue).setStyle(ButtonStyle.Secondary)
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("codex:usage").setLabel(messages.actions.usage).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:workspace").setLabel(messages.actions.workspace).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:doctor").setLabel(messages.actions.doctor).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
@@ -1049,6 +1081,7 @@ function idleComponents(): ActionRowBuilder<ButtonBuilder>[] {
       new ButtonBuilder().setCustomId("codex:refresh").setLabel(messages.actions.refresh).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:settings").setLabel(messages.actions.settings).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:queue").setLabel(messages.actions.queue).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:usage").setLabel(messages.actions.usage).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:doctor").setLabel(messages.actions.doctor).setStyle(ButtonStyle.Secondary)
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -1155,6 +1188,7 @@ function buildStatusEmbed(state: ThreadState, runningFlag: boolean) {
     idleMs: running ? Date.now() - running.lastActivityAt : undefined,
     queued: state.queue.length,
     queueSummary: formatQueueSummary(state.queue),
+    usage: running?.usage,
     warning: buildOperationalWarning()
   }, config.language);
 }
@@ -1211,7 +1245,8 @@ async function persistRunningJob(
     updatedAt: new Date().toISOString(),
     endedAt: status === "running" ? undefined : new Date().toISOString(),
     error: status === "failed" ? lastEvent : undefined,
-    queued: state.queue.length
+    queued: state.queue.length,
+    usage: running.usage
   });
 }
 
@@ -1365,6 +1400,14 @@ async function sendThreadDoctor(thread: ThreadChannel): Promise<void> {
     embeds: [formatDoctorEmbed(checks, config.language)],
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "doctor.send", threadId: thread.id });
+}
+
+async function sendThreadUsage(thread: ThreadChannel, state: ThreadState | undefined): Promise<void> {
+  const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
+  await sendThreadMessage(thread, {
+    embeds: [formatUsageEmbed(state?.running?.usage ?? await loadUsageState(workspace), config.language)],
+    allowedMentions: { parse: [] }
+  }, discordApiOptions(), { action: "usage.send", threadId: thread.id });
 }
 
 function cancelSelectedQueuedJob(state: ThreadState | undefined): void {

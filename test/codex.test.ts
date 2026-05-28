@@ -152,6 +152,49 @@ describe("parseCodexJsonLine", () => {
 
     expect(state.finalMessages).toEqual(["done"]);
   });
+
+  test("extracts token usage from token count events", () => {
+    const state: CodexParseState = { finalMessages: [], deltaMessages: [] };
+
+    parseCodexJsonLine(
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 10,
+              cached_input_tokens: 4,
+              output_tokens: 2,
+              reasoning_output_tokens: 1,
+              total_tokens: 12
+            },
+            last_token_usage: {
+              input_tokens: 3,
+              cached_input_tokens: 1,
+              output_tokens: 2,
+              reasoning_output_tokens: 0,
+              total_tokens: 5
+            },
+            model_context_window: 100
+          },
+          rate_limits: {
+            primary: { used_percent: 3 },
+            secondary: { used_percent: 5 },
+            plan_type: "pro"
+          }
+        }
+      }),
+      state
+    );
+
+    expect(state.usage?.total?.totalTokens).toBe(12);
+    expect(state.usage?.last?.inputTokens).toBe(3);
+    expect(state.usage?.modelContextWindow).toBe(100);
+    expect(state.usage?.rateLimits?.primaryUsedPercent).toBe(3);
+    expect(state.usage?.rateLimits?.secondaryUsedPercent).toBe(5);
+    expect(state.usage?.rateLimits?.planType).toBe("pro");
+  });
 });
 
 describe("runCodex watchdogs", () => {

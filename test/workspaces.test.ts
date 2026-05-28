@@ -9,11 +9,13 @@ import {
   loadPanelState,
   loadSessionId,
   loadSessionState,
+  loadUsageState,
   markJobInterrupted,
   resetSession,
   saveJobState,
   savePanelState,
-  saveSessionId
+  saveSessionId,
+  saveUsageState
 } from "../src/workspaces";
 
 const tempDirs: string[] = [];
@@ -72,5 +74,31 @@ describe("thread workspaces", () => {
     await savePanelState(workspace, "message-123");
 
     expect((await loadPanelState(workspace))?.messageId).toBe("message-123");
+  });
+
+  test("persists Codex usage state", async () => {
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "codex-discord-agent-"));
+    tempDirs.push(baseDir);
+
+    const workspace = await ensureThreadWorkspace(baseDir, "guild", "thread");
+    await saveUsageState(workspace, {
+      total: {
+        inputTokens: 10,
+        cachedInputTokens: 4,
+        outputTokens: 2,
+        reasoningOutputTokens: 1,
+        totalTokens: 12
+      },
+      modelContextWindow: 100,
+      rateLimits: {
+        primaryUsedPercent: 3,
+        planType: "pro"
+      }
+    });
+
+    const usage = await loadUsageState(workspace);
+
+    expect(usage?.total?.totalTokens).toBe(12);
+    expect(usage?.rateLimits?.planType).toBe("pro");
   });
 });

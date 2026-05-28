@@ -19,6 +19,7 @@ export interface CodexRunOptions {
   onSpawn?: (child: ChildProcessWithoutNullStreams) => void;
   onActivity?: () => void;
   onEvent?: (event: CodexRunEvent) => void;
+  onUsage?: (usage: CodexUsage) => void;
   onMessage?: (content: string) => void | Promise<void>;
 }
 
@@ -26,6 +27,7 @@ export interface CodexRunResult {
   content: string;
   sessionId?: string;
   sessionLogPath?: string;
+  usage?: CodexUsage;
 }
 
 export interface CodexRunEvent {
@@ -37,6 +39,29 @@ export interface CodexParseState {
   sessionId?: string;
   finalMessages: string[];
   deltaMessages: string[];
+  usage?: CodexUsage;
+}
+
+export interface CodexTokenUsage {
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+  totalTokens?: number;
+}
+
+export interface CodexRateLimitUsage {
+  primaryUsedPercent?: number;
+  secondaryUsedPercent?: number;
+  planType?: string;
+  rateLimitReachedType?: string;
+}
+
+export interface CodexUsage {
+  total?: CodexTokenUsage;
+  last?: CodexTokenUsage;
+  modelContextWindow?: number;
+  rateLimits?: CodexRateLimitUsage;
 }
 
 export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult> {
@@ -176,13 +201,18 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
     sessionId: parseState.sessionId,
     sessionLogPath: parseState.sessionId
       ? await findCodexSessionLogPath(parseState.sessionId).catch(() => undefined)
-      : undefined
+      : undefined,
+    usage: parseState.usage
   };
 
   function parseCodexJsonLineAndNotify(line: string): void {
     markActivity();
     const previousMessageCount = parseState.finalMessages.length;
+    const previousUsageSignature = usageSignature(parseState.usage);
     parseCodexJsonLine(line, parseState);
+    if (usageSignature(parseState.usage) !== previousUsageSignature && parseState.usage) {
+      options.onUsage?.(parseState.usage);
+    }
     const eventSummary = summarizeCodexJsonLine(line, parseState.finalMessages.length > previousMessageCount);
     if (eventSummary) {
       options.onEvent?.(eventSummary);
@@ -403,6 +433,11 @@ export function parseCodexJsonLine(line: string, state: CodexParseState): void {
     state.sessionId = sessionId;
   }
 
+  const usage = extractCodexUsage(event);
+  if (usage) {
+    state.usage = usage;
+  }
+
   const finalMessage = extractFinalAssistantMessage(event);
   if (finalMessage) {
     state.finalMessages.push(finalMessage);
@@ -413,6 +448,76 @@ export function parseCodexJsonLine(line: string, state: CodexParseState): void {
   if (deltaMessage) {
     state.deltaMessages.push(deltaMessage);
   }
+}
+
+function extractCodexUsage(value: unknown): CodexUsage | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  if (buildType(value).toLowerCase() === "token_count" && isRecord(value.info)) {
+    return usageFromTokenCount(value);
+  }
+
+  if (isRecord(value.payload)) {
+    const nested = extractCodexUsage(value.payload);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return undefined;
+}
+
+function usageFromTokenCount(value: Record<string, unknown>): CodexUsage | undefined {
+  const info = isRecord(value.info) ? value.info : undefined;
+  if (!info) {
+    return undefined;
+  }
+
+  const rateLimits = isRecord(value.rate_limits) ? value.rate_limits : undefined;
+  return {
+    total: parseTokenUsage(info.total_token_usage),
+    last: parseTokenUsage(info.last_token_usage),
+    modelContextWindow: numberValue(info.model_context_window),
+    rateLimits: rateLimits
+      ? {
+        primaryUsedPercent: parseRateLimitPercent(rateLimits.primary),
+        secondaryUsedPercent: parseRateLimitPercent(rateLimits.secondary),
+        planType: stringValue(rateLimits.plan_type),
+        rateLimitReachedType: stringValue(rateLimits.rate_limit_reached_type)
+      }
+      : undefined
+  };
+}
+
+function parseTokenUsage(value: unknown): CodexTokenUsage | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return {
+    inputTokens: numberValue(value.input_tokens),
+    cachedInputTokens: numberValue(value.cached_input_tokens),
+    outputTokens: numberValue(value.output_tokens),
+    reasoningOutputTokens: numberValue(value.reasoning_output_tokens),
+    totalTokens: numberValue(value.total_tokens)
+  };
+}
+
+function parseRateLimitPercent(value: unknown): number | undefined {
+  return isRecord(value) ? numberValue(value.used_percent) : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function usageSignature(usage: CodexUsage | undefined): string {
+  return usage ? JSON.stringify(usage) : "";
 }
 
 function buildType(value: unknown): string {

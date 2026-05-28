@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatStatusEmbed, splitDiscordMessage, summarizeLongResponse } from "../src/discordFormat";
+import { formatStatusEmbed, formatUsageEmbed, splitDiscordMessage, summarizeLongResponse } from "../src/discordFormat";
 
 describe("splitDiscordMessage", () => {
   test("returns a friendly empty response", () => {
@@ -40,6 +40,35 @@ describe("splitDiscordMessage", () => {
 
     expect(embed.fields?.some((field) => field.name === "Phase" && field.value.includes("Using tools"))).toBe(true);
     expect(embed.fields?.some((field) => field.name === "Last event")).toBe(true);
+  });
+
+  test("formats Codex usage details", () => {
+    const embed = formatUsageEmbed({
+      total: {
+        inputTokens: 10,
+        cachedInputTokens: 4,
+        outputTokens: 2,
+        reasoningOutputTokens: 1,
+        totalTokens: 12
+      },
+      last: {
+        inputTokens: 3,
+        cachedInputTokens: 1,
+        outputTokens: 2,
+        reasoningOutputTokens: 0,
+        totalTokens: 5
+      },
+      modelContextWindow: 100,
+      rateLimits: {
+        primaryUsedPercent: 3,
+        secondaryUsedPercent: 5,
+        planType: "pro"
+      }
+    }, "en");
+
+    expect(embed.title).toBe("Codex usage");
+    expect(embed.fields?.some((field) => field.name === "Total tokens" && field.value.includes("12"))).toBe(true);
+    expect(embed.fields?.some((field) => field.name === "Rate limits" && field.value.includes("primary 3%"))).toBe(true);
   });
 
   test("summarizes long file responses", () => {

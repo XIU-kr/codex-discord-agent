@@ -6,6 +6,7 @@ export type ThreadCommandName =
   | "settings"
   | "queue"
   | "doctor"
+  | "usage"
   | "status"
   | "workspace"
   | "reset"
@@ -29,6 +30,8 @@ const commandAliases: Record<string, ThreadCommandName> = {
   q: "queue",
   doctor: "doctor",
   check: "doctor",
+  usage: "usage",
+  tokens: "usage",
   status: "status",
   workspace: "workspace",
   reset: "reset",

@@ -1,11 +1,13 @@
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { CodexUsage } from "./codex";
 
 export interface ThreadWorkspace {
   dir: string;
   sessionFile: string;
   jobStateFile: string;
   panelStateFile: string;
+  usageStateFile: string;
   stateDir: string;
   attachmentsDir: string;
 }
@@ -28,6 +30,7 @@ export interface StoredJobState {
   endedAt?: string;
   error?: string;
   queued?: number;
+  usage?: CodexUsage;
 }
 
 export interface PanelState {
@@ -39,6 +42,7 @@ const stateDirName = ".codex-discord-agent";
 const sessionFileName = "session.json";
 const jobStateFileName = "last-job.json";
 const panelStateFileName = "panel.json";
+const usageStateFileName = "usage.json";
 const attachmentsDirName = "attachments";
 
 export async function ensureThreadWorkspace(
@@ -57,6 +61,7 @@ export async function ensureThreadWorkspace(
     sessionFile: path.join(stateDir, sessionFileName),
     jobStateFile: path.join(stateDir, jobStateFileName),
     panelStateFile: path.join(stateDir, panelStateFileName),
+    usageStateFile: path.join(stateDir, usageStateFileName),
     stateDir,
     attachmentsDir
   };
@@ -137,6 +142,21 @@ export async function savePanelState(workspace: ThreadWorkspace, messageId: stri
     messageId,
     updatedAt: new Date().toISOString()
   }, null, 2)}\n`, "utf8");
+}
+
+export async function loadUsageState(workspace: ThreadWorkspace): Promise<CodexUsage | undefined> {
+  try {
+    return JSON.parse(await readFile(workspace.usageStateFile, "utf8")) as CodexUsage;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+export async function saveUsageState(workspace: ThreadWorkspace, usage: CodexUsage): Promise<void> {
+  await writeFile(workspace.usageStateFile, `${JSON.stringify(usage, null, 2)}\n`, "utf8");
 }
 
 export async function markJobInterrupted(workspace: ThreadWorkspace): Promise<StoredJobState | undefined> {

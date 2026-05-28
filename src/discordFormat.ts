@@ -1,5 +1,6 @@
 import { t, type BotLanguage } from "./i18n";
 import type { DoctorCheck } from "./doctor";
+import type { CodexTokenUsage, CodexUsage } from "./codex";
 
 export const DISCORD_MESSAGE_LIMIT = 2000;
 const DEFAULT_CHUNK_LIMIT = 1900;
@@ -179,6 +180,7 @@ export function formatRunCompleteEmbed(options: {
   sessionId?: string;
   files?: number;
   bytes?: number;
+  usage?: CodexUsage;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
   const fields: DiscordEmbedField[] = [
@@ -192,6 +194,7 @@ export function formatRunCompleteEmbed(options: {
       value: code(`${messages.values.files(options.files)} / ${formatBytes(options.bytes)}`)
     });
   }
+  appendUsageFields(fields, options.usage, language, true);
 
   return {
     title: plainTitle(messages.runComplete),
@@ -268,6 +271,7 @@ export function formatStatusEmbed(options: {
   idleMs?: number;
   queued: number;
   queueSummary?: string;
+  usage?: CodexUsage;
   warning?: string;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
@@ -326,11 +330,25 @@ export function formatStatusEmbed(options: {
   if (options.queueSummary) {
     fields.push({ name: messages.labels.queue, value: options.queueSummary });
   }
+  appendUsageFields(fields, options.usage, language, false);
 
   return {
     title: plainTitle(messages.statusTitle),
     description: options.warning,
     color: options.running ? embedColors.running : embedColors.neutral,
+    timestamp: new Date().toISOString(),
+    fields
+  };
+}
+
+export function formatUsageEmbed(usage: CodexUsage | undefined, language: BotLanguage = "en"): DiscordEmbed {
+  const messages = t(language);
+  const fields: DiscordEmbedField[] = [];
+  appendUsageFields(fields, usage, language, true);
+  return {
+    title: plainTitle(messages.usageTitle),
+    description: usage ? undefined : messages.usageEmpty,
+    color: embedColors.neutral,
     timestamp: new Date().toISOString(),
     fields
   };
@@ -463,6 +481,64 @@ export function formatDoctorEmbed(checks: DoctorCheck[], language: BotLanguage =
   };
 }
 
+function appendUsageFields(
+  fields: DiscordEmbedField[],
+  usage: CodexUsage | undefined,
+  language: BotLanguage,
+  detailed: boolean
+): void {
+  if (!usage) {
+    return;
+  }
+  const messages = t(language);
+  if (usage.total) {
+    fields.push({
+      name: messages.labels.totalTokens,
+      value: code(formatTokenUsage(usage.total, language, detailed)),
+      inline: !detailed
+    });
+  }
+  if (detailed && usage.last) {
+    fields.push({
+      name: messages.labels.lastTokens,
+      value: code(formatTokenUsage(usage.last, language, true))
+    });
+  }
+  if (detailed && typeof usage.modelContextWindow === "number") {
+    fields.push({
+      name: messages.labels.contextWindow,
+      value: code(formatNumber(usage.modelContextWindow)),
+      inline: true
+    });
+  }
+  if (detailed && usage.rateLimits) {
+    const rateParts = [
+      typeof usage.rateLimits.primaryUsedPercent === "number" ? `primary ${usage.rateLimits.primaryUsedPercent}%` : undefined,
+      typeof usage.rateLimits.secondaryUsedPercent === "number" ? `secondary ${usage.rateLimits.secondaryUsedPercent}%` : undefined
+    ].filter(Boolean);
+    if (rateParts.length > 0) {
+      fields.push({ name: messages.labels.rateLimits, value: code(rateParts.join(" / ")), inline: true });
+    }
+    if (usage.rateLimits.planType) {
+      fields.push({ name: messages.labels.plan, value: code(usage.rateLimits.planType), inline: true });
+    }
+  }
+}
+
+function formatTokenUsage(usage: CodexTokenUsage, language: BotLanguage, detailed: boolean): string {
+  const messages = t(language);
+  if (!detailed) {
+    return usage.totalTokens === undefined ? messages.values.unknown : formatNumber(usage.totalTokens);
+  }
+  return [
+    `${messages.labels.totalTokens}: ${formatMaybeNumber(usage.totalTokens, messages.values.unknown)}`,
+    `${messages.labels.inputTokens}: ${formatMaybeNumber(usage.inputTokens, messages.values.unknown)}`,
+    `${messages.labels.cachedTokens}: ${formatMaybeNumber(usage.cachedInputTokens, messages.values.unknown)}`,
+    `${messages.labels.outputTokens}: ${formatMaybeNumber(usage.outputTokens, messages.values.unknown)}`,
+    `${messages.labels.reasoningTokens}: ${formatMaybeNumber(usage.reasoningOutputTokens, messages.values.unknown)}`
+  ].join(" / ");
+}
+
 export function formatDuration(ms: number, language: BotLanguage = "en"): string {
   const seconds = Math.max(0, Math.round(ms / 1000));
   if (language === "ko") {
@@ -480,6 +556,14 @@ export function formatDuration(ms: number, language: BotLanguage = "en"): string
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = seconds % 60;
   return `${minutes}m ${remainingSeconds}s`;
+}
+
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat("en-US").format(value);
+}
+
+function formatMaybeNumber(value: number | undefined, fallback: string): string {
+  return value === undefined ? fallback : formatNumber(value);
 }
 
 export function formatBytes(bytes: number): string {
