@@ -19,6 +19,7 @@ import { saveDiscordAttachments, formatAttachmentPrompt, type AttachmentSaveResu
 import { runCodex } from "./codex";
 import { findLatestCodexSessionIdForWorkspace } from "./codexSessions";
 import { loadConfig } from "./config";
+import { runDoctor } from "./doctor";
 import {
   editDiscordMessage,
   replyToInteraction,
@@ -28,6 +29,7 @@ import {
 import {
   formatCodexResponse,
   formatControlPanelEmbed,
+  formatDoctorEmbed,
   formatError,
   formatQueueEmbed,
   formatRunCompleteEmbed,
@@ -606,6 +608,9 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
     case "queue":
       await sendThreadQueue(thread, state);
       return;
+    case "doctor":
+      await sendThreadDoctor(thread);
+      return;
     case "status": {
       await sendThreadStatus(thread, state);
       return;
@@ -730,6 +735,13 @@ async function handleButtonInteraction(interaction: ButtonInteraction, thread: T
       await sendThreadQueue(thread, state);
       await replyToInteraction(interaction, { content: messages.statusRefreshed, ephemeral: true }, discordApiOptions(), {
         action: "button.queue",
+        threadId: thread.id
+      });
+      return;
+    case "codex:doctor":
+      await sendThreadDoctor(thread);
+      await replyToInteraction(interaction, { content: messages.statusRefreshed, ephemeral: true }, discordApiOptions(), {
+        action: "button.doctor",
         threadId: thread.id
       });
       return;
@@ -889,7 +901,8 @@ function runningComponents(): ActionRowBuilder<ButtonBuilder>[] {
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId("codex:settings").setLabel(messages.actions.settings).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:queue").setLabel(messages.actions.queue).setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId("codex:queue").setLabel(messages.actions.queue).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:doctor").setLabel(messages.actions.doctor).setStyle(ButtonStyle.Secondary)
     )
   ];
 }
@@ -904,6 +917,7 @@ function failedComponents(): ActionRowBuilder<ButtonBuilder>[] {
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId("codex:workspace").setLabel(messages.actions.workspace).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:doctor").setLabel(messages.actions.doctor).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
     )
   ];
@@ -915,6 +929,9 @@ function idleComponents(): ActionRowBuilder<ButtonBuilder>[] {
       new ButtonBuilder().setCustomId("codex:refresh").setLabel(messages.actions.refresh).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:settings").setLabel(messages.actions.settings).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:queue").setLabel(messages.actions.queue).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:doctor").setLabel(messages.actions.doctor).setStyle(ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId("codex:workspace").setLabel(messages.actions.workspace).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
     )
@@ -1155,6 +1172,15 @@ async function sendThreadQueue(thread: ThreadChannel, state: ThreadState | undef
     components: queueComponents(state),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "queue.send", threadId: thread.id });
+}
+
+async function sendThreadDoctor(thread: ThreadChannel): Promise<void> {
+  const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
+  const checks = await runDoctor(config, workspace);
+  await sendThreadMessage(thread, {
+    embeds: [formatDoctorEmbed(checks, config.language)],
+    allowedMentions: { parse: [] }
+  }, discordApiOptions(), { action: "doctor.send", threadId: thread.id });
 }
 
 function cancelSelectedQueuedJob(state: ThreadState | undefined): void {

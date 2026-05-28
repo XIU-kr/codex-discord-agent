@@ -1,4 +1,5 @@
 import { t, type BotLanguage } from "./i18n";
+import type { DoctorCheck } from "./doctor";
 
 export const DISCORD_MESSAGE_LIMIT = 2000;
 const DEFAULT_CHUNK_LIMIT = 1900;
@@ -445,6 +446,23 @@ export function formatQueueEmbed(options: {
   };
 }
 
+export function formatDoctorEmbed(checks: DoctorCheck[], language: BotLanguage = "en"): DiscordEmbed {
+  const messages = t(language);
+  const failed = checks.filter((check) => check.status === "fail").length;
+  const warnings = checks.filter((check) => check.status === "warn").length;
+  const color = failed > 0 ? embedColors.failed : warnings > 0 ? 0xf2c94c : embedColors.complete;
+
+  return {
+    title: plainTitle(messages.doctorTitle),
+    color,
+    timestamp: new Date().toISOString(),
+    fields: checks.map((check) => ({
+      name: `${statusLabel(check.status)} ${check.name}`,
+      value: code(clip(check.detail, 900))
+    }))
+  };
+}
+
 export function formatDuration(ms: number, language: BotLanguage = "en"): string {
   const seconds = Math.max(0, Math.round(ms / 1000));
   if (language === "ko") {
@@ -545,6 +563,10 @@ function clip(value: string, limit: number): string {
 
 function escapeMarkdown(value: string): string {
   return value.replace(/([*_`~|])/g, "\\$1");
+}
+
+function statusLabel(status: DoctorCheck["status"]): string {
+  return status === "ok" ? "OK" : status === "warn" ? "WARN" : "FAIL";
 }
 
 function phaseLabel(value: string, language: BotLanguage): string {
