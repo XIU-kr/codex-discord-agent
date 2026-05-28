@@ -311,6 +311,24 @@ export function formatStatusEmbed(options: {
   };
 }
 
+export function formatControlPanelEmbed(options: {
+  running: boolean;
+  jobId?: string;
+  phase?: string;
+  lastEvent?: string;
+  queued: number;
+  queueSummary?: string;
+  warning?: string;
+}, language: BotLanguage = "en"): DiscordEmbed {
+  const messages = t(language);
+  const status = formatStatusEmbed(options, language);
+  return {
+    ...status,
+    title: plainTitle(messages.panelTitle),
+    description: [messages.panelIntro, options.warning].filter(Boolean).join("\n\n")
+  };
+}
+
 export function formatWorkspaceEmbed(options: {
   path: string;
   sessionId?: string;

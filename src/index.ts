@@ -25,6 +25,7 @@ import {
 } from "./discordApi";
 import {
   formatCodexResponse,
+  formatControlPanelEmbed,
   formatError,
   formatRunCompleteEmbed,
   formatRunFailedEmbed,
@@ -117,10 +118,7 @@ client.on(Events.ThreadCreate, async (thread) => {
 
   try {
     await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
-    await sendThreadMessage(thread, {
-      content: messages.workspaceConnected.join("\n"),
-      allowedMentions: { parse: [] }
-    }, discordApiOptions(), { action: "thread.create.welcome", threadId: thread.id });
+    await sendControlPanel(thread, threadStates.get(thread.id));
     console.log(`Prepared workspace for thread ${thread.id}`);
   } catch (error) {
     console.error(`Failed to prepare workspace for thread ${thread.id}`, error);
@@ -562,6 +560,9 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
         threadId: thread.id
       });
       return;
+    case "panel":
+      await sendControlPanel(thread, state);
+      return;
     case "status": {
       await sendThreadStatus(thread, state);
       return;
@@ -884,6 +885,31 @@ async function sendThreadStatus(thread: ThreadChannel, state: ThreadState | unde
     components: state?.running ? runningComponents() : idleComponents(),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "status.send", threadId: thread.id, jobId: state?.running?.id, phase: state?.running?.phase });
+}
+
+async function sendControlPanel(thread: ThreadChannel, state: ThreadState | undefined): Promise<void> {
+  const embed = state?.running
+    ? formatControlPanelEmbed({
+      running: true,
+      jobId: state.running.id,
+      phase: state.running.phase,
+      lastEvent: state.running.lastEvent,
+      queued: state.queue.length,
+      queueSummary: formatQueueSummary(state.queue),
+      warning: buildOperationalWarning()
+    }, config.language)
+    : formatControlPanelEmbed({
+      running: false,
+      queued: state?.queue.length ?? 0,
+      queueSummary: formatQueueSummary(state?.queue ?? []),
+      warning: buildOperationalWarning()
+    }, config.language);
+
+  await sendThreadMessage(thread, {
+    embeds: [embed],
+    components: state?.running ? runningComponents() : idleComponents(),
+    allowedMentions: { parse: [] }
+  }, discordApiOptions(), { action: "panel.send", threadId: thread.id, jobId: state?.running?.id, phase: state?.running?.phase });
 }
 
 async function loadOrRecoverSessionId(workspace: Awaited<ReturnType<typeof ensureThreadWorkspace>>): Promise<string | undefined> {

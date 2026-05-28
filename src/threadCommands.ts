@@ -2,6 +2,7 @@ import { t, type BotLanguage } from "./i18n";
 
 export type ThreadCommandName =
   | "help"
+  | "panel"
   | "status"
   | "workspace"
   | "reset"
@@ -17,6 +18,8 @@ export interface ThreadCommand {
 
 const commandAliases: Record<string, ThreadCommandName> = {
   help: "help",
+  panel: "panel",
+  controls: "panel",
   status: "status",
   workspace: "workspace",
   reset: "reset",

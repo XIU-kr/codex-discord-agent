@@ -36,6 +36,8 @@ const messages = {
     workspaceTitle: "**Workspace**",
     logsTitle: "**Logs**",
     logsIntro: "Run one of these commands on the server to inspect logs.",
+    panelTitle: "**Codex control panel**",
+    panelIntro: "Use the controls below to inspect and manage this thread.",
     labels: {
       job: "Job",
       phase: "Phase",
@@ -77,6 +79,7 @@ const messages = {
     },
     actions: {
       refresh: "Refresh status",
+      panel: "Control panel",
       stopCurrent: "Stop current",
       stopAll: "Stop all",
       workspace: "Workspace",
@@ -99,6 +102,7 @@ const messages = {
     commandHelp: [
       "**Codex commands**",
       "`/codex status` - Show this thread's job status.",
+      "`/codex panel` - Show the control panel.",
       "`/codex workspace` - Show workspace path and size.",
       "`/codex reset` - Start a fresh Codex session for this thread.",
       "`/codex stop` - Stop the running Codex job and clear the queue.",
@@ -139,6 +143,8 @@ const messages = {
     workspaceTitle: "**작업 공간**",
     logsTitle: "**로그**",
     logsIntro: "서버에서 다음 명령으로 로그를 확인하세요.",
+    panelTitle: "**Codex 컨트롤 패널**",
+    panelIntro: "아래 컨트롤로 이 스레드를 확인하고 관리합니다.",
     labels: {
       job: "작업",
       phase: "단계",
@@ -180,6 +186,7 @@ const messages = {
     },
     actions: {
       refresh: "상태 새로고침",
+      panel: "컨트롤 패널",
       stopCurrent: "현재 작업 중단",
       stopAll: "전체 중단",
       workspace: "작업공간",
@@ -202,6 +209,7 @@ const messages = {
     commandHelp: [
       "**Codex 명령어**",
       "`/codex status` - 현재 스레드의 작업 상태를 봅니다.",
+      "`/codex panel` - 컨트롤 패널을 봅니다.",
       "`/codex workspace` - 작업 공간 경로와 크기를 봅니다.",
       "`/codex reset` - 현재 스레드의 Codex 세션을 새로 시작합니다.",
       "`/codex stop` - 실행 중인 Codex 작업을 중단하고 대기열을 비웁니다.",
