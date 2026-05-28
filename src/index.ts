@@ -1,18 +1,28 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  ActionRowBuilder,
   AttachmentBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
   Client,
   Events,
+  type ButtonInteraction,
   GatewayIntentBits,
   type Message,
   type ThreadChannel
 } from "discord.js";
-import { saveDiscordAttachments, formatAttachmentPrompt } from "./attachments";
+import { saveDiscordAttachments, formatAttachmentPrompt, type AttachmentSaveResult } from "./attachments";
 import { runCodex } from "./codex";
 import { findLatestCodexSessionIdForWorkspace } from "./codexSessions";
 import { loadConfig } from "./config";
+import {
+  editDiscordMessage,
+  replyToInteraction,
+  sendThreadMessage,
+  sendThreadTyping
+} from "./discordApi";
 import {
   formatCodexResponse,
   formatError,
@@ -24,7 +34,8 @@ import {
   formatWorkspaceEmbed,
   prefixChunks,
   shouldSendAsFile,
-  splitDiscordMessage
+  splitDiscordMessage,
+  summarizeLongResponse
 } from "./discordFormat";
 import { t } from "./i18n";
 import { isStatusQuestion } from "./statusQuestions";
@@ -33,22 +44,38 @@ import {
   cleanStaleWorkspaces,
   ensureThreadWorkspace,
   getWorkspaceStats,
-  loadSessionId,
+  loadSessionState,
+  markJobInterrupted,
   resetSession,
-  saveSessionId
+  saveJobState,
+  saveSessionId,
+  type ThreadWorkspace
 } from "./workspaces";
 
 interface QueuedJob {
+  id: string;
   messages: Message[];
   prompt: string;
+  promptSummary: string;
+  authorId: string;
+  authorName: string;
+  createdAt: number;
+  messageIds: string[];
+  attachmentCount: number;
 }
 
 interface RunningJob {
+  id: string;
   startedAt: number;
   lastActivityAt: number;
+  phase: string;
+  lastEvent: string;
+  timeoutAt?: number;
+  idleDeadlineAt?: number;
   abortController: AbortController;
   statusMessage?: Message;
   stopRequested?: boolean;
+  workspace?: ThreadWorkspace;
   job: QueuedJob;
 }
 
@@ -65,6 +92,7 @@ interface EnqueueResult {
 const config = loadConfig();
 const messages = t(config.language);
 const threadStates = new Map<string, ThreadState>();
+const retryableJobs = new Map<string, QueuedJob>();
 
 const client = new Client({
   intents: [
@@ -77,6 +105,9 @@ const client = new Client({
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
   console.log(`Watching guild ${config.discordGuildId}, parent channel ${config.discordParentChannelId}`);
+  if (isAllowlistOpen()) {
+    console.warn(messages.allowlistWarning);
+  }
 });
 
 client.on(Events.ThreadCreate, async (thread) => {
@@ -86,10 +117,10 @@ client.on(Events.ThreadCreate, async (thread) => {
 
   try {
     await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
-    await thread.send({
+    await sendThreadMessage(thread, {
       content: messages.workspaceConnected.join("\n"),
       allowedMentions: { parse: [] }
-    });
+    }, discordApiOptions(), { action: "thread.create.welcome", threadId: thread.id });
     console.log(`Prepared workspace for thread ${thread.id}`);
   } catch (error) {
     console.error(`Failed to prepare workspace for thread ${thread.id}`, error);
@@ -106,12 +137,13 @@ client.on(Events.MessageCreate, async (message) => {
   await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
 
   if (!(await isAllowed(message))) {
-    await thread.send({
+    await sendThreadMessage(thread, {
       content: messages.denied,
       allowedMentions: { parse: [] }
-    });
+    }, discordApiOptions(), { action: "message.denied", threadId: thread.id });
     return;
   }
+  await notifyInterruptedIfAny(thread);
 
   const command = parseThreadCommand(prompt);
   if (command) {
@@ -129,14 +161,29 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
-  const enqueueResult = enqueueThreadJob(thread.id, {
-    messages: [message],
-    prompt
-  });
+  const enqueueResult = enqueueThreadJob(thread.id, createQueuedJob([message], prompt));
 
   if (!enqueueResult.started) {
     await sendThreadStatus(thread, threadStates.get(thread.id));
   }
+});
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isButton() || !interaction.guild || !interaction.channel?.isThread()) {
+    return;
+  }
+  const thread = interaction.channel as ThreadChannel;
+  if (!isManagedThread(thread)) {
+    return;
+  }
+  if (!(await isInteractionAllowed(interaction))) {
+    await replyToInteraction(interaction, { content: messages.denied, ephemeral: true }, discordApiOptions(), {
+      action: "interaction.denied",
+      threadId: thread.id
+    });
+    return;
+  }
+  await handleButtonInteraction(interaction, thread);
 });
 
 await client.login(config.discordToken);
@@ -170,20 +217,66 @@ function isManagedThread(thread: ThreadChannel): boolean {
 }
 
 async function isAllowed(message: Message): Promise<boolean> {
+  return isUserAllowed(message.guild, message.author.id, message.member);
+}
+
+async function isInteractionAllowed(interaction: ButtonInteraction): Promise<boolean> {
+  return isUserAllowed(interaction.guild, interaction.user.id, interaction.member);
+}
+
+async function isUserAllowed(
+  guild: Message["guild"],
+  userId: string,
+  memberLike: Message["member"] | ButtonInteraction["member"]
+): Promise<boolean> {
   if (config.allowedUserIds.length === 0 && config.allowedRoleIds.length === 0) {
     return true;
   }
 
-  if (config.allowedUserIds.includes(message.author.id)) {
+  if (config.allowedUserIds.includes(userId)) {
     return true;
   }
 
-  const member = message.member ?? (await message.guild?.members.fetch(message.author.id).catch(() => null));
+  const member = memberLike && "roles" in memberLike
+    ? memberLike
+    : (await guild?.members.fetch(userId).catch(() => null));
   if (!member) {
     return false;
   }
 
-  return config.allowedRoleIds.some((roleId) => member.roles.cache.has(roleId));
+  const roles = member.roles;
+  if (Array.isArray(roles)) {
+    return config.allowedRoleIds.some((roleId) => roles.includes(roleId));
+  }
+  return config.allowedRoleIds.some((roleId) => roles.cache.has(roleId));
+}
+
+function createQueuedJob(messages: Message[], prompt: string): QueuedJob {
+  const latestMessage = messages[messages.length - 1];
+  const author = latestMessage?.author;
+  return {
+    id: createJobId(),
+    messages,
+    prompt,
+    promptSummary: summarizePrompt(prompt),
+    authorId: author?.id ?? "unknown",
+    authorName: latestMessage?.member?.displayName ?? author?.username ?? "unknown",
+    createdAt: Date.now(),
+    messageIds: messages.map((message) => message.id),
+    attachmentCount: messages.reduce((count, message) => count + message.attachments.size, 0)
+  };
+}
+
+function createJobId(): string {
+  return `job-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function summarizePrompt(prompt: string): string {
+  const normalized = prompt.trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    return messages.analyzeAttachments;
+  }
+  return normalized.length > 120 ? `${normalized.slice(0, 117)}...` : normalized;
 }
 
 function getThreadState(threadId: string): ThreadState {
@@ -220,13 +313,28 @@ function mergeQueuedJobs(jobs: QueuedJob[]): QueuedJob {
     return jobs[0];
   }
 
+  const first = jobs[0];
   return {
+    id: first.id,
     messages: jobs.flatMap((job) => job.messages),
+    authorId: first.authorId,
+    authorName: first.authorName,
+    createdAt: first.createdAt,
+    messageIds: jobs.flatMap((job) => job.messageIds),
+    attachmentCount: jobs.reduce((count, job) => count + job.attachmentCount, 0),
+    promptSummary: jobs.map((job) => job.promptSummary).join(" / ").slice(0, 120),
     prompt: [
       messages.combinedPromptIntro,
       ...jobs.map((job, index) => {
         const prompt = job.prompt.trim() || messages.analyzeAttachments;
-        return `\n[${index + 1}]\n${prompt}`;
+        return [
+          `\n[${index + 1}]`,
+          `Author: ${job.authorName} (${job.authorId})`,
+          `Messages: ${job.messageIds.join(", ")}`,
+          `Created: ${new Date(job.createdAt).toISOString()}`,
+          `Attachments: ${job.attachmentCount}`,
+          prompt
+        ].join("\n");
       })
     ].join("\n")
   };
@@ -249,8 +357,13 @@ async function processNextJob(threadId: string): Promise<void> {
 
   const abortController = new AbortController();
   state.running = {
+    id: job.id,
     startedAt: Date.now(),
     lastActivityAt: Date.now(),
+    phase: "preparing",
+    lastEvent: "Job accepted.",
+    timeoutAt: config.codexRunTimeoutMs ? Date.now() + config.codexRunTimeoutMs : undefined,
+    idleDeadlineAt: config.codexIdleTimeoutMs ? Date.now() + config.codexIdleTimeoutMs : undefined,
     abortController,
     job
   };
@@ -280,30 +393,48 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
 
   try {
     const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
-    const sessionId = await loadOrRecoverSessionId(workspace);
-    const savedAttachments = (
-      await Promise.all(job.messages.map((message) =>
-        saveDiscordAttachments(message.attachments.values(), workspace, message.id)
-      ))
-    ).flat();
+    if (state.running) {
+      state.running.workspace = workspace;
+    }
+    await persistRunningJob(state, "preparing", "Workspace is ready.");
+    const sessionState = await loadOrRecoverSession(workspace);
+    const sessionId = sessionState?.sessionId;
+    await persistRunningJob(state, "attachments", "Saving Discord attachments.");
+    const attachmentResults: AttachmentSaveResult[] = [];
+    let usedAttachmentBytes = 0;
+    for (const message of job.messages) {
+      const result = await saveDiscordAttachments(message.attachments.values(), workspace, message.id, {
+        timeoutMs: config.attachmentDownloadTimeoutMs,
+        maxFileBytes: config.attachmentMaxFileBytes,
+        maxTotalBytes: config.attachmentMaxTotalBytes,
+        usedBytes: usedAttachmentBytes
+      });
+      usedAttachmentBytes = result.usedBytes;
+      attachmentResults.push(result);
+    }
+    const savedAttachments = attachmentResults.flatMap((result) => result.saved);
+    const failedAttachments = attachmentResults.flatMap((result) => result.failed);
     const imagePaths = savedAttachments.filter((attachment) => attachment.isImage).map((attachment) => attachment.path);
-    const attachmentPrompt = formatAttachmentPrompt(savedAttachments, config.language);
+    const attachmentPrompt = formatAttachmentPrompt(savedAttachments, failedAttachments, config.language);
     const prompt = [
       job.prompt || messages.analyzeAttachments,
       attachmentPrompt,
       messages.replyInstruction
     ].join("\n");
 
-    const statusMessage = await thread.send({
+    const statusMessage = await sendThreadMessage(thread, {
       embeds: [formatRunStartEmbed({
-        workspaceDir: workspace.dir,
+        jobId: job.id,
+        workspaceDir: displayWorkspacePath(workspace.dir),
         model: config.codexModel,
         reasoningEffort: config.codexReasoningEffort,
         sessionId,
-        queued: state.queue.length
+        queued: state.queue.length,
+        warning: buildOperationalWarning()
       }, config.language)],
+      components: runningComponents(),
       allowedMentions: { parse: [] }
-    });
+    }, discordApiOptions(), { action: "job.start", threadId: thread.id, jobId: job.id, phase: "preparing" });
     if (state.running) {
       state.running.statusMessage = statusMessage;
     }
@@ -313,18 +444,20 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       if (!running?.statusMessage) {
         return;
       }
-      void running.statusMessage.edit({
-        embeds: [formatStatusEmbed({
-          running: true,
-          elapsedMs: Date.now() - startedAt,
-          idleMs: Date.now() - running.lastActivityAt,
-          queued: state.queue.length
-        }, config.language)],
+      void editDiscordMessage(running.statusMessage, {
+        embeds: [buildStatusEmbed(state, true)],
+        components: runningComponents(),
         allowedMentions: { parse: [] }
+      }, discordApiOptions(), {
+        action: "job.status.edit",
+        threadId: thread.id,
+        jobId: running.id,
+        phase: running.phase
       }).catch(() => undefined);
     }, 30_000);
 
     let streamedMessages = 0;
+    await persistRunningJob(state, "codex", "Codex process started.");
     const result = await runCodex({
       codexBin: config.codexBin,
       model: config.codexModel,
@@ -332,6 +465,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       prompt,
       workspaceDir: workspace.dir,
       sessionId,
+      sessionLogPath: sessionState?.sessionLogPath,
       imagePaths,
       signal: state.running?.abortController.signal,
       runTimeoutMs: config.codexRunTimeoutMs,
@@ -340,57 +474,73 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       onActivity: () => {
         if (state.running) {
           state.running.lastActivityAt = Date.now();
+          state.running.idleDeadlineAt = config.codexIdleTimeoutMs ? Date.now() + config.codexIdleTimeoutMs : undefined;
         }
+      },
+      onEvent: (event) => {
+        void persistRunningJob(state, event.phase, event.summary);
       },
       onMessage: async (content) => {
         streamedMessages += 1;
+        await persistRunningJob(state, "sending", "Sending Codex response to Discord.");
         await sendFormatted(thread, formatCodexResponse(content, config.language), workspace.stateDir);
       }
     });
 
     if (result.sessionId) {
-      await saveSessionId(workspace, result.sessionId);
+      await saveSessionId(workspace, result.sessionId, result.sessionLogPath ?? sessionState?.sessionLogPath);
     }
+    if (streamedMessages === 0) {
+      await persistRunningJob(state, "sending", "Sending final Codex response to Discord.");
+      await sendFormatted(thread, formatCodexResponse(result.content, config.language), workspace.stateDir);
+    }
+
+    await persistRunningJob(state, "completed", "Codex job completed.", "completed");
 
     if (state.running?.statusMessage) {
       const stats = await getWorkspaceStats(workspace);
-      await state.running.statusMessage.edit({
+      await editDiscordMessage(state.running.statusMessage, {
         embeds: [formatRunCompleteEmbed({
           elapsedMs: Date.now() - startedAt,
           sessionId: result.sessionId ?? sessionId,
           files: stats.files,
           bytes: stats.bytes
         }, config.language)],
+        components: idleComponents(),
         allowedMentions: { parse: [] }
-      });
-    }
-
-    if (streamedMessages === 0) {
-      await sendFormatted(thread, formatCodexResponse(result.content, config.language), workspace.stateDir);
+      }, discordApiOptions(), { action: "job.complete.edit", threadId: thread.id, jobId: job.id, phase: "completed" });
     }
   } catch (error) {
     const running = state.running;
     if (running?.stopRequested) {
       console.log(`Codex run stopped by user request for thread ${thread.id}`);
+      await persistRunningJob(state, "stopped", "Codex job stopped.", "stopped");
       if (running.statusMessage) {
-        await running.statusMessage.edit({
+        await editDiscordMessage(running.statusMessage, {
           embeds: [formatRunStoppedEmbed({
             elapsedMs: Date.now() - startedAt
           }, config.language)],
+          components: idleComponents(),
           allowedMentions: { parse: [] }
-        }).catch(() => undefined);
+        }, discordApiOptions(), { action: "job.stopped.edit", threadId: thread.id, jobId: running.id, phase: "stopped" })
+          .catch(() => undefined);
       }
       return;
     }
 
     console.error(`Codex failed for thread ${thread.id}`, error);
+    retryableJobs.set(thread.id, job);
+    await persistRunningJob(state, "failed", error instanceof Error ? error.message : String(error), "failed");
     if (running?.statusMessage) {
-      await running.statusMessage.edit({
+      await editDiscordMessage(running.statusMessage, {
         embeds: [formatRunFailedEmbed({
-          elapsedMs: Date.now() - startedAt
+          elapsedMs: Date.now() - startedAt,
+          lastEvent: running.lastEvent
         }, config.language)],
+        components: failedComponents(),
         allowedMentions: { parse: [] }
-      }).catch(() => undefined);
+      }, discordApiOptions(), { action: "job.failed.edit", threadId: thread.id, jobId: running.id, phase: "failed" })
+        .catch(() => undefined);
     }
     await sendFormatted(thread, formatError(error, config.language));
   } finally {
@@ -407,7 +557,10 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
 
   switch (command.name) {
     case "help":
-      await thread.send({ content: formatCommandHelp(config.language), allowedMentions: { parse: [] } });
+      await sendThreadMessage(thread, { content: formatCommandHelp(config.language), allowedMentions: { parse: [] } }, discordApiOptions(), {
+        action: "command.help",
+        threadId: thread.id
+      });
       return;
     case "status": {
       await sendThreadStatus(thread, state);
@@ -416,24 +569,25 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
     case "workspace": {
       const stats = await getWorkspaceStats(workspace);
       const sessionId = await loadOrRecoverSessionId(workspace);
-      await thread.send({
+      await sendThreadMessage(thread, {
         embeds: [formatWorkspaceEmbed({
-          path: workspace.dir,
+          path: displayWorkspacePath(workspace.dir),
           sessionId,
           files: stats.files,
           bytes: stats.bytes,
-          updatedAt: stats.updatedAt
+          updatedAt: stats.updatedAt,
+          warning: buildOperationalWarning()
         }, config.language)],
         allowedMentions: { parse: [] }
-      });
+      }, discordApiOptions(), { action: "command.workspace", threadId: thread.id });
       return;
     }
     case "reset":
       await resetSession(workspace);
-      await thread.send({
+      await sendThreadMessage(thread, {
         content: messages.reset,
         allowedMentions: { parse: [] }
-      });
+      }, discordApiOptions(), { action: "command.reset", threadId: thread.id });
       return;
     case "stop":
       if (state?.running) {
@@ -443,13 +597,23 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
       if (state) {
         state.queue.length = 0;
       }
-      await thread.send({
+      await sendThreadMessage(thread, {
         content: messages.stopped,
         allowedMentions: { parse: [] }
-      });
+      }, discordApiOptions(), { action: "command.stop", threadId: thread.id });
+      return;
+    case "stop-current":
+      if (state?.running) {
+        state.running.stopRequested = true;
+        state.running.abortController.abort();
+      }
+      await sendThreadMessage(thread, {
+        content: messages.stopCurrentRequested,
+        allowedMentions: { parse: [] }
+      }, discordApiOptions(), { action: "command.stop-current", threadId: thread.id });
       return;
     case "logs":
-      await thread.send({
+      await sendThreadMessage(thread, {
         content: [
           messages.logsTitle,
           messages.logsIntro,
@@ -459,7 +623,7 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
           "```"
         ].join("\n"),
         allowedMentions: { parse: [] }
-      });
+      }, discordApiOptions(), { action: "command.logs", threadId: thread.id });
       return;
     case "clean": {
       const result = await cleanStaleWorkspaces(
@@ -468,32 +632,268 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
         config.staleWorkspaceDays,
         thread.id
       );
-      await thread.send({
+      await sendThreadMessage(thread, {
         content: messages.cleanDone(result.removed, result.skipped),
         allowedMentions: { parse: [] }
-      });
+      }, discordApiOptions(), { action: "command.clean", threadId: thread.id });
       return;
     }
   }
 }
 
-async function sendThreadStatus(thread: ThreadChannel, state: ThreadState | undefined): Promise<void> {
-  const running = state?.running;
-  await thread.send({
+async function notifyInterruptedIfAny(thread: ThreadChannel): Promise<void> {
+  const state = threadStates.get(thread.id);
+  if (state?.running) {
+    return;
+  }
+  const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
+  const interrupted = await markJobInterrupted(workspace);
+  if (interrupted?.status !== "interrupted") {
+    return;
+  }
+  await sendThreadMessage(thread, {
     embeds: [formatStatusEmbed({
-      running: Boolean(running),
-      elapsedMs: running ? Date.now() - running.startedAt : undefined,
-      idleMs: running ? Date.now() - running.lastActivityAt : undefined,
-      queued: state?.queue.length ?? 0
+      running: false,
+      jobId: interrupted.jobId,
+      phase: interrupted.phase,
+      lastEvent: messages.interruptedHint,
+      queued: 0,
+      warning: buildOperationalWarning()
     }, config.language)],
+    components: idleComponents(),
     allowedMentions: { parse: [] }
+  }, discordApiOptions(), { action: "job.interrupted.notice", threadId: thread.id, jobId: interrupted.jobId });
+}
+
+async function handleButtonInteraction(interaction: ButtonInteraction, thread: ThreadChannel): Promise<void> {
+  const state = threadStates.get(thread.id);
+  switch (interaction.customId) {
+    case "codex:refresh":
+      await sendThreadStatus(thread, state);
+      await replyToInteraction(interaction, { content: messages.statusRefreshed, ephemeral: true }, discordApiOptions(), {
+        action: "button.refresh",
+        threadId: thread.id
+      });
+      return;
+    case "codex:stop-current":
+      if (state?.running) {
+        state.running.stopRequested = true;
+        state.running.abortController.abort();
+      }
+      await replyToInteraction(interaction, { content: messages.stopCurrentRequested, ephemeral: true }, discordApiOptions(), {
+        action: "button.stop-current",
+        threadId: thread.id,
+        jobId: state?.running?.id
+      });
+      return;
+    case "codex:stop-all":
+      if (state?.running) {
+        state.running.stopRequested = true;
+        state.running.abortController.abort();
+      }
+      if (state) {
+        state.queue.length = 0;
+      }
+      await replyToInteraction(interaction, { content: messages.stopped, ephemeral: true }, discordApiOptions(), {
+        action: "button.stop-all",
+        threadId: thread.id,
+        jobId: state?.running?.id
+      });
+      return;
+    case "codex:workspace":
+      await handleThreadCommand(thread, { name: "workspace", args: [] });
+      await replyToInteraction(interaction, { content: messages.statusRefreshed, ephemeral: true }, discordApiOptions(), {
+        action: "button.workspace",
+        threadId: thread.id
+      });
+      return;
+    case "codex:logs":
+      await handleThreadCommand(thread, { name: "logs", args: [] });
+      await replyToInteraction(interaction, { content: messages.statusRefreshed, ephemeral: true }, discordApiOptions(), {
+        action: "button.logs",
+        threadId: thread.id
+      });
+      return;
+    case "codex:retry":
+    case "codex:reset-retry":
+      await retryLastJob(thread, interaction.customId === "codex:reset-retry");
+      await replyToInteraction(interaction, {
+        content: interaction.customId === "codex:reset-retry" ? messages.resetRetryQueued : messages.retryQueued,
+        ephemeral: true
+      }, discordApiOptions(), {
+        action: interaction.customId,
+        threadId: thread.id
+      });
+      return;
+  }
+}
+
+async function retryLastJob(thread: ThreadChannel, resetFirst: boolean): Promise<void> {
+  const job = retryableJobs.get(thread.id);
+  if (!job) {
+    await sendThreadMessage(thread, {
+      content: config.language === "ko" ? "재시도할 최근 작업이 없습니다." : "There is no recent job to retry.",
+      allowedMentions: { parse: [] }
+    }, discordApiOptions(), { action: "retry.missing", threadId: thread.id });
+    return;
+  }
+  if (resetFirst) {
+    const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
+    await resetSession(workspace);
+  }
+  enqueueThreadJob(thread.id, {
+    ...job,
+    id: createJobId(),
+    createdAt: Date.now()
   });
 }
 
+function runningComponents(): ActionRowBuilder<ButtonBuilder>[] {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("codex:refresh").setLabel(messages.actions.refresh).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:stop-current").setLabel(messages.actions.stopCurrent).setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("codex:stop-all").setLabel(messages.actions.stopAll).setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("codex:workspace").setLabel(messages.actions.workspace).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
+    )
+  ];
+}
+
+function failedComponents(): ActionRowBuilder<ButtonBuilder>[] {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("codex:retry").setLabel(messages.actions.retry).setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("codex:reset-retry").setLabel(messages.actions.resetRetry).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
+    )
+  ];
+}
+
+function idleComponents(): ActionRowBuilder<ButtonBuilder>[] {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("codex:refresh").setLabel(messages.actions.refresh).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:workspace").setLabel(messages.actions.workspace).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
+    )
+  ];
+}
+
+function buildStatusEmbed(state: ThreadState, runningFlag: boolean) {
+  const running = state.running;
+  return formatStatusEmbed({
+    running: runningFlag,
+    jobId: running?.id,
+    phase: running?.phase,
+    lastEvent: running?.lastEvent,
+    timeoutAt: running?.idleDeadlineAt ?? running?.timeoutAt,
+    elapsedMs: running ? Date.now() - running.startedAt : undefined,
+    idleMs: running ? Date.now() - running.lastActivityAt : undefined,
+    queued: state.queue.length,
+    queueSummary: formatQueueSummary(state.queue),
+    warning: buildOperationalWarning()
+  }, config.language);
+}
+
+async function buildIdleStatusEmbed(thread: ThreadChannel, state: ThreadState | undefined) {
+  const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
+  const lastJob = await markJobInterrupted(workspace);
+  return formatStatusEmbed({
+    running: false,
+    jobId: lastJob?.jobId,
+    phase: lastJob?.status,
+    lastEvent: lastJob?.status === "interrupted" ? messages.interruptedHint : lastJob?.error,
+    queued: state?.queue.length ?? 0,
+    queueSummary: formatQueueSummary(state?.queue ?? []),
+    warning: buildOperationalWarning()
+  }, config.language);
+}
+
+function formatQueueSummary(queue: QueuedJob[]): string | undefined {
+  if (queue.length === 0) {
+    return undefined;
+  }
+  return queue.slice(0, 5)
+    .map((job, index) => `**${index + 1}.** ${escapeMarkdown(job.authorName)}: ${escapeMarkdown(job.promptSummary)}`)
+    .join("\n");
+}
+
+async function persistRunningJob(
+  state: ThreadState,
+  phase: string,
+  lastEvent: string,
+  status: "running" | "completed" | "failed" | "stopped" | "interrupted" = "running"
+): Promise<void> {
+  const running = state.running;
+  if (!running) {
+    return;
+  }
+
+  running.phase = phase;
+  running.lastEvent = lastEvent;
+  running.lastActivityAt = Date.now();
+  running.idleDeadlineAt = config.codexIdleTimeoutMs ? Date.now() + config.codexIdleTimeoutMs : undefined;
+
+  if (!running.workspace) {
+    return;
+  }
+
+  await saveJobState(running.workspace, {
+    jobId: running.id,
+    status,
+    phase,
+    promptSummary: running.job.promptSummary,
+    startedAt: new Date(running.startedAt).toISOString(),
+    updatedAt: new Date().toISOString(),
+    endedAt: status === "running" ? undefined : new Date().toISOString(),
+    error: status === "failed" ? lastEvent : undefined,
+    queued: state.queue.length
+  });
+}
+
+function discordApiOptions() {
+  return {
+    timeoutMs: config.discordSendTimeoutMs,
+    retries: 2
+  };
+}
+
+function buildOperationalWarning(): string | undefined {
+  return isAllowlistOpen() ? messages.allowlistWarning : undefined;
+}
+
+function isAllowlistOpen(): boolean {
+  return config.allowedUserIds.length === 0 && config.allowedRoleIds.length === 0;
+}
+
+function displayWorkspacePath(workspaceDir: string): string {
+  return config.hideWorkspacePaths ? "[hidden]" : workspaceDir;
+}
+
+function escapeMarkdown(value: string): string {
+  return value.replace(/([*_`~|])/g, "\\$1");
+}
+
+async function sendThreadStatus(thread: ThreadChannel, state: ThreadState | undefined): Promise<void> {
+  const embed = state?.running
+    ? buildStatusEmbed(state, true)
+    : await buildIdleStatusEmbed(thread, state);
+  await sendThreadMessage(thread, {
+    embeds: [embed],
+    components: state?.running ? runningComponents() : idleComponents(),
+    allowedMentions: { parse: [] }
+  }, discordApiOptions(), { action: "status.send", threadId: thread.id, jobId: state?.running?.id, phase: state?.running?.phase });
+}
+
 async function loadOrRecoverSessionId(workspace: Awaited<ReturnType<typeof ensureThreadWorkspace>>): Promise<string | undefined> {
-  const savedSessionId = await loadSessionId(workspace);
-  if (savedSessionId) {
-    return savedSessionId;
+  return (await loadOrRecoverSession(workspace))?.sessionId;
+}
+
+async function loadOrRecoverSession(workspace: Awaited<ReturnType<typeof ensureThreadWorkspace>>): Promise<Awaited<ReturnType<typeof loadSessionState>>> {
+  const savedSession = await loadSessionState(workspace);
+  if (savedSession?.sessionId) {
+    return savedSession;
   }
 
   const recoveredSessionId = await findLatestCodexSessionIdForWorkspace(workspace.dir);
@@ -503,14 +903,14 @@ async function loadOrRecoverSessionId(workspace: Awaited<ReturnType<typeof ensur
 
   await saveSessionId(workspace, recoveredSessionId);
   console.log(`Recovered Codex session ${recoveredSessionId} for workspace ${workspace.dir}`);
-  return recoveredSessionId;
+  return { sessionId: recoveredSessionId, updatedAt: new Date().toISOString() };
 }
 
 function startTyping(thread: ThreadChannel): () => void {
-  void thread.sendTyping().catch(() => undefined);
+  void sendThreadTyping(thread, discordApiOptions(), { action: "typing", threadId: thread.id });
 
   const timer = setInterval(() => {
-    void thread.sendTyping().catch(() => undefined);
+    void sendThreadTyping(thread, discordApiOptions(), { action: "typing", threadId: thread.id });
   }, 8_000);
 
   return () => clearInterval(timer);
@@ -525,18 +925,18 @@ async function sendFormatted(
     await mkdir(fileDir, { recursive: true });
     const filePath = path.join(fileDir, `response-${Date.now()}.md`);
     await writeFile(filePath, `${content.trim()}\n`, "utf8");
-    await thread.send({
-      content: messages.longResponseFile,
+    await sendThreadMessage(thread, {
+      content: summarizeLongResponse(content, config.language),
       files: [new AttachmentBuilder(filePath, { name: "codex-response.md" })],
       allowedMentions: { parse: [] }
-    });
+    }, discordApiOptions(), { action: "response.file", threadId: thread.id });
     return;
   }
 
   for (const chunk of prefixChunks(splitDiscordMessage(content, undefined, config.language))) {
-    await thread.send({
+    await sendThreadMessage(thread, {
       content: chunk,
       allowedMentions: { parse: [] }
-    });
+    }, discordApiOptions(), { action: "response.chunk", threadId: thread.id });
   }
 }

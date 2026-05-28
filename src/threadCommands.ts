@@ -6,6 +6,7 @@ export type ThreadCommandName =
   | "workspace"
   | "reset"
   | "stop"
+  | "stop-current"
   | "logs"
   | "clean";
 
@@ -21,6 +22,8 @@ const commandAliases: Record<string, ThreadCommandName> = {
   reset: "reset",
   stop: "stop",
   cancel: "stop",
+  "stop-current": "stop-current",
+  stopcurrent: "stop-current",
   logs: "logs",
   clean: "clean",
   cleanup: "clean"

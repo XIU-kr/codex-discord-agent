@@ -13,6 +13,10 @@ export interface AppConfig {
   codexRunTimeoutMs?: number;
   codexIdleTimeoutMs?: number;
   discordSendTimeoutMs?: number;
+  attachmentDownloadTimeoutMs?: number;
+  attachmentMaxFileBytes: number;
+  attachmentMaxTotalBytes: number;
+  hideWorkspacePaths: boolean;
   allowedUserIds: string[];
   allowedRoleIds: string[];
   staleWorkspaceDays: number;
@@ -54,6 +58,11 @@ function optionalSecondsEnv(name: string, fallbackSeconds: number): number | und
   return parsed === 0 ? undefined : parsed * 1000;
 }
 
+function optionalBooleanEnv(name: string, fallback: boolean): boolean {
+  const raw = optionalEnv(name, fallback ? "1" : "0").toLowerCase();
+  return ["1", "true", "yes", "on"].includes(raw);
+}
+
 export function loadConfig(): AppConfig {
   return {
     discordToken: requiredEnv("DISCORD_TOKEN"),
@@ -67,6 +76,10 @@ export function loadConfig(): AppConfig {
     codexRunTimeoutMs: optionalSecondsEnv("CODEX_RUN_TIMEOUT_SECONDS", 45 * 60),
     codexIdleTimeoutMs: optionalSecondsEnv("CODEX_IDLE_TIMEOUT_SECONDS", 10 * 60),
     discordSendTimeoutMs: optionalSecondsEnv("DISCORD_SEND_TIMEOUT_SECONDS", 30),
+    attachmentDownloadTimeoutMs: optionalSecondsEnv("ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS", 60),
+    attachmentMaxFileBytes: optionalNumberEnv("ATTACHMENT_MAX_FILE_BYTES", 25 * 1024 * 1024),
+    attachmentMaxTotalBytes: optionalNumberEnv("ATTACHMENT_MAX_TOTAL_BYTES", 100 * 1024 * 1024),
+    hideWorkspacePaths: optionalBooleanEnv("HIDE_WORKSPACE_PATHS", false),
     allowedUserIds: optionalListEnv("DISCORD_ALLOWED_USER_IDS"),
     allowedRoleIds: optionalListEnv("DISCORD_ALLOWED_ROLE_IDS"),
     staleWorkspaceDays: optionalNumberEnv("STALE_WORKSPACE_DAYS", 30),

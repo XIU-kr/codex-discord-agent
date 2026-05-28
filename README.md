@@ -169,6 +169,10 @@ CODEX_REASONING_EFFORT=high
 CODEX_RUN_TIMEOUT_SECONDS=2700
 CODEX_IDLE_TIMEOUT_SECONDS=600
 DISCORD_SEND_TIMEOUT_SECONDS=30
+ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS=60
+ATTACHMENT_MAX_FILE_BYTES=26214400
+ATTACHMENT_MAX_TOTAL_BYTES=104857600
+HIDE_WORKSPACE_PATHS=0
 BOT_LANGUAGE=en
 DISCORD_ALLOWED_USER_IDS=
 DISCORD_ALLOWED_ROLE_IDS=
@@ -188,6 +192,10 @@ Configuration reference:
 - `CODEX_RUN_TIMEOUT_SECONDS`: maximum wall-clock time for one Codex job. Default: `2700`. Set `0` to disable.
 - `CODEX_IDLE_TIMEOUT_SECONDS`: maximum time to wait with no Codex output before stopping the job. Default: `600`. Set `0` to disable.
 - `DISCORD_SEND_TIMEOUT_SECONDS`: maximum time to wait while sending a Codex response to Discord. Default: `30`. Set `0` to disable.
+- `ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS`: maximum time to wait for each Discord attachment download. Default: `60`. Set `0` to disable.
+- `ATTACHMENT_MAX_FILE_BYTES`: maximum downloaded size for one attachment. Default: `26214400`.
+- `ATTACHMENT_MAX_TOTAL_BYTES`: maximum downloaded size for all attachments in one job. Default: `104857600`.
+- `HIDE_WORKSPACE_PATHS`: set to `1` to hide server workspace paths in Discord embeds. Default: `0`.
 - `BOT_LANGUAGE`: `en` or `ko`. Default: `en`.
 - `DISCORD_ALLOWED_USER_IDS`: comma-separated Discord user IDs allowed to run Codex. Empty means no user allowlist.
 - `DISCORD_ALLOWED_ROLE_IDS`: comma-separated Discord role IDs allowed to run Codex. Empty means no role allowlist.
@@ -229,9 +237,13 @@ Inside a managed thread:
 /codex workspace
 /codex reset
 /codex stop
+/codex stop-current
 /codex logs
 /codex clean
 ```
+
+Status messages also include Discord buttons for refresh, stopping the current job, stopping all queued work, workspace information, logs, and retry actions after failures.
+If the service restarts during a job, the bot marks the last running job as interrupted the next time the thread is used or checked. In-memory queued jobs are not restored after a restart.
 
 ## systemd
 
@@ -304,13 +316,14 @@ bun run start
 First request:
 
 ```bash
-codex exec --json --skip-git-repo-check -s danger-full-access -m gpt-5.5 -c 'model_reasoning_effort="high"' -C <workspace> -
+codex exec --json -m gpt-5.5 -c 'model_reasoning_effort="high"' --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C <workspace> -
 ```
 
 Follow-up request:
 
 ```bash
-codex exec resume --json -m gpt-5.5 -c 'model_reasoning_effort="high"' <sessionId> -
+codex exec resume --json -m gpt-5.5 -c 'model_reasoning_effort="high"' --dangerously-bypass-approvals-and-sandbox <sessionId> -
 ```
 
 `danger-full-access` is a powerful setting. Use this bot only in trusted Discord servers and channels.
+For production use, set `DISCORD_ALLOWED_USER_IDS` or `DISCORD_ALLOWED_ROLE_IDS`; otherwise every user who can write in a managed thread can ask Codex to run with full workspace access.

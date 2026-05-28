@@ -144,24 +144,32 @@ export function formatRunComplete(options: {
 }
 
 export function formatRunStartEmbed(options: {
+  jobId?: string;
   workspaceDir: string;
   model: string;
   reasoningEffort: string;
   sessionId?: string;
   queued: number;
+  warning?: string;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
+  const fields: DiscordEmbedField[] = [
+    { name: messages.labels.workspace, value: code(options.workspaceDir) },
+    { name: messages.labels.model, value: code(options.model), inline: true },
+    { name: messages.labels.reasoning, value: code(options.reasoningEffort), inline: true },
+    { name: messages.labels.session, value: code(options.sessionId ?? messages.values.newSession), inline: true },
+    { name: messages.labels.queued, value: code(String(options.queued)), inline: true }
+  ];
+  if (options.jobId) {
+    fields.unshift({ name: messages.labels.job, value: code(options.jobId), inline: true });
+  }
+
   return {
     title: plainTitle(messages.runStart),
+    description: options.warning,
     color: embedColors.running,
     timestamp: new Date().toISOString(),
-    fields: [
-      { name: messages.labels.workspace, value: code(options.workspaceDir) },
-      { name: messages.labels.model, value: code(options.model), inline: true },
-      { name: messages.labels.reasoning, value: code(options.reasoningEffort), inline: true },
-      { name: messages.labels.session, value: code(options.sessionId ?? messages.values.newSession), inline: true },
-      { name: messages.labels.queued, value: code(String(options.queued)), inline: true }
-    ]
+    fields
   };
 }
 
@@ -194,15 +202,21 @@ export function formatRunCompleteEmbed(options: {
 
 export function formatRunFailedEmbed(options: {
   elapsedMs: number;
+  lastEvent?: string;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
+  const fields: DiscordEmbedField[] = [
+    { name: messages.labels.elapsed, value: code(formatDuration(options.elapsedMs, language)), inline: true }
+  ];
+  if (options.lastEvent) {
+    fields.push({ name: messages.labels.lastEvent, value: code(options.lastEvent) });
+  }
+
   return {
     title: plainTitle(messages.runFailed),
     color: embedColors.failed,
     timestamp: new Date().toISOString(),
-    fields: [
-      { name: messages.labels.elapsed, value: code(formatDuration(options.elapsedMs, language)), inline: true }
-    ]
+    fields
   };
 }
 
@@ -238,9 +252,15 @@ export function formatRunRestartedEmbed(options: {
 
 export function formatStatusEmbed(options: {
   running: boolean;
+  jobId?: string;
+  phase?: string;
+  lastEvent?: string;
+  timeoutAt?: number;
   elapsedMs?: number;
   idleMs?: number;
   queued: number;
+  queueSummary?: string;
+  warning?: string;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
   const fields: DiscordEmbedField[] = [
@@ -248,23 +268,43 @@ export function formatStatusEmbed(options: {
     { name: messages.labels.queued, value: code(String(options.queued)), inline: true }
   ];
 
+  if (options.jobId) {
+    fields.unshift({ name: messages.labels.job, value: code(options.jobId), inline: true });
+  }
+  if (options.phase) {
+    fields.push({ name: messages.labels.phase, value: code(phaseLabel(options.phase, language)), inline: true });
+  }
   if (typeof options.elapsedMs === "number") {
-    fields.splice(1, 0, {
+    fields.push({
       name: messages.labels.elapsed,
       value: code(formatDuration(options.elapsedMs, language)),
       inline: true
     });
   }
   if (typeof options.idleMs === "number") {
-    fields.splice(2, 0, {
+    fields.push({
       name: messages.labels.idle,
       value: code(formatDuration(options.idleMs, language)),
       inline: true
     });
   }
+  if (typeof options.timeoutAt === "number") {
+    fields.push({
+      name: messages.labels.nextStop,
+      value: code(formatDuration(Math.max(0, options.timeoutAt - Date.now()), language)),
+      inline: true
+    });
+  }
+  if (options.lastEvent) {
+    fields.push({ name: messages.labels.lastEvent, value: code(options.lastEvent) });
+  }
+  if (options.queueSummary) {
+    fields.push({ name: messages.labels.queue, value: options.queueSummary });
+  }
 
   return {
     title: plainTitle(messages.statusTitle),
+    description: options.warning,
     color: options.running ? embedColors.running : embedColors.neutral,
     timestamp: new Date().toISOString(),
     fields
@@ -277,10 +317,12 @@ export function formatWorkspaceEmbed(options: {
   files: number;
   bytes: number;
   updatedAt?: Date;
+  warning?: string;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
   return {
     title: plainTitle(messages.workspaceTitle),
+    description: options.warning,
     color: embedColors.neutral,
     timestamp: new Date().toISOString(),
     fields: [
@@ -344,7 +386,34 @@ function splitLongPiece(piece: string, limit: number, activeFenceLang: string | 
 export function formatError(error: unknown, language: BotLanguage = "en"): string {
   const message = error instanceof Error ? error.message : String(error);
   const clipped = message.length > 1500 ? `${message.slice(0, 1500)}...` : message;
-  return `${t(language).runFailed}\n${friendlyErrorHint(message, language)}\n\`\`\`\n${clipped}\n\`\`\``;
+  const messages = t(language);
+  if (language === "ko") {
+    return [
+      messages.runFailed,
+      `무슨 일이 있었는지: ${friendlyErrorHint(message, language)}`,
+      "사용자가 할 수 있는 행동: `/codex status`, `/codex stop`, `/codex logs`를 확인하세요.",
+      "```",
+      clipped,
+      "```"
+    ].join("\n");
+  }
+  return [
+    messages.runFailed,
+    `What happened: ${friendlyErrorHint(message, language)}`,
+    "What you can do: check `/codex status`, `/codex stop`, or `/codex logs`.",
+    "```",
+    clipped,
+    "```"
+  ].join("\n");
+}
+
+export function summarizeLongResponse(content: string, language: BotLanguage = "en"): string {
+  const normalized = content.trim();
+  const limit = 1200;
+  const summary = normalized.length > limit ? `${normalized.slice(0, limit).trimEnd()}...` : normalized;
+  return language === "ko"
+    ? `**Codex 응답이 길어서 Markdown 파일로 첨부합니다.**\n\n${summary}`
+    : `**Codex response is long, so it is attached as a Markdown file.**\n\n${summary}`;
 }
 
 function hasStructuredHeadings(content: string): boolean {
@@ -357,6 +426,11 @@ function code(value: string): string {
 
 function plainTitle(value: string): string {
   return value.replace(/^\*\*/, "").replace(/\*\*$/, "");
+}
+
+function phaseLabel(value: string, language: BotLanguage): string {
+  const phases = t(language).phases as Record<string, string>;
+  return phases[value] ?? value;
 }
 
 function friendlyErrorHint(message: string, language: BotLanguage): string {

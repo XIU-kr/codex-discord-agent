@@ -10,6 +10,7 @@ export interface CodexRunOptions {
   prompt: string;
   workspaceDir: string;
   sessionId?: string;
+  sessionLogPath?: string;
   imagePaths?: string[];
   signal?: AbortSignal;
   runTimeoutMs?: number;
@@ -17,12 +18,19 @@ export interface CodexRunOptions {
   messageHandlerTimeoutMs?: number;
   onSpawn?: (child: ChildProcessWithoutNullStreams) => void;
   onActivity?: () => void;
+  onEvent?: (event: CodexRunEvent) => void;
   onMessage?: (content: string) => void | Promise<void>;
 }
 
 export interface CodexRunResult {
   content: string;
   sessionId?: string;
+  sessionLogPath?: string;
+}
+
+export interface CodexRunEvent {
+  phase: "codex" | "tool" | "responding" | "failed";
+  summary: string;
 }
 
 export interface CodexParseState {
@@ -96,7 +104,7 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
   const notifiedMessages = new Set<string>();
   let stopSessionLogWatch: (() => void) | undefined;
   const sessionLogWatcher = options.sessionId && options.onMessage
-    ? watchSessionLog(options.sessionId, parseCodexJsonLineAndNotify)
+    ? watchSessionLog(options.sessionId, parseCodexJsonLineAndNotify, options.sessionLogPath)
     : undefined;
   stopSessionLogWatch = sessionLogWatcher?.stop;
 
@@ -165,13 +173,20 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
 
   return {
     content,
-    sessionId: parseState.sessionId
+    sessionId: parseState.sessionId,
+    sessionLogPath: parseState.sessionId
+      ? await findCodexSessionLogPath(parseState.sessionId).catch(() => undefined)
+      : undefined
   };
 
   function parseCodexJsonLineAndNotify(line: string): void {
     markActivity();
     const previousMessageCount = parseState.finalMessages.length;
     parseCodexJsonLine(line, parseState);
+    const eventSummary = summarizeCodexJsonLine(line, parseState.finalMessages.length > previousMessageCount);
+    if (eventSummary) {
+      options.onEvent?.(eventSummary);
+    }
 
     for (const message of parseState.finalMessages.slice(previousMessageCount)) {
       if (notifiedMessages.has(message)) {
@@ -192,14 +207,20 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
 
 function watchSessionLog(
   sessionId: string,
-  onLine: (line: string) => void
+  onLine: (line: string) => void,
+  knownPath?: string
 ): { stop: () => void; done: Promise<void> } {
   let stopped = false;
   let offset = 0;
   let buffer = "";
 
   const done = (async () => {
-    const filePath = await waitForSessionLogPath(sessionId);
+    const knownPathExists = knownPath
+      ? await stat(knownPath).then(() => true).catch(() => false)
+      : false;
+    const filePath = knownPathExists
+      ? knownPath
+      : await waitForSessionLogPath(sessionId);
     if (!filePath) {
       return;
     }
@@ -281,6 +302,58 @@ function formatSeconds(ms: number | undefined): string {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = seconds % 60;
   return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+}
+
+function summarizeCodexJsonLine(line: string, producedMessage: boolean): CodexRunEvent | undefined {
+  if (producedMessage) {
+    return { phase: "responding", summary: "Assistant response received." };
+  }
+
+  let event: unknown;
+  try {
+    event = JSON.parse(line.trim());
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(event)) {
+    return undefined;
+  }
+
+  const type = buildType(event).toLowerCase();
+  const nestedType = isRecord(event.payload) ? buildType(event.payload).toLowerCase() : "";
+  const combinedType = `${type} ${nestedType}`;
+  if (combinedType.includes("error") || combinedType.includes("failed")) {
+    return { phase: "failed", summary: "Codex reported an error." };
+  }
+  if (
+    combinedType.includes("tool") ||
+    combinedType.includes("exec") ||
+    combinedType.includes("command") ||
+    combinedType.includes("mcp") ||
+    combinedType.includes("function")
+  ) {
+    return { phase: "tool", summary: summarizeToolEvent(event) };
+  }
+  if (combinedType.includes("message") || combinedType.includes("agent")) {
+    return { phase: "responding", summary: "Codex is preparing a response." };
+  }
+  if (combinedType.includes("session")) {
+    return { phase: "codex", summary: "Codex session is active." };
+  }
+
+  return { phase: "codex", summary: type || "Codex event received." };
+}
+
+function summarizeToolEvent(event: Record<string, unknown>): string {
+  const candidates = [
+    event.command,
+    event.name,
+    event.tool,
+    isRecord(event.payload) ? event.payload.command : undefined,
+    isRecord(event.payload) ? event.payload.name : undefined
+  ];
+  const value = candidates.find((candidate) => typeof candidate === "string" && candidate.length > 0);
+  return value ? `Tool activity: ${value}` : "Codex is using a tool.";
 }
 
 export function buildCodexArgs(options: CodexRunOptions): string[] {

@@ -4,17 +4,34 @@ import path from "node:path";
 export interface ThreadWorkspace {
   dir: string;
   sessionFile: string;
+  jobStateFile: string;
   stateDir: string;
   attachmentsDir: string;
 }
 
-interface SessionState {
+export interface SessionState {
   sessionId?: string;
+  sessionLogPath?: string;
   updatedAt: string;
+}
+
+export type StoredJobStatus = "running" | "completed" | "failed" | "stopped" | "interrupted";
+
+export interface StoredJobState {
+  jobId: string;
+  status: StoredJobStatus;
+  phase: string;
+  promptSummary: string;
+  startedAt: string;
+  updatedAt: string;
+  endedAt?: string;
+  error?: string;
+  queued?: number;
 }
 
 const stateDirName = ".codex-discord-agent";
 const sessionFileName = "session.json";
+const jobStateFileName = "last-job.json";
 const attachmentsDirName = "attachments";
 
 export async function ensureThreadWorkspace(
@@ -31,18 +48,23 @@ export async function ensureThreadWorkspace(
   return {
     dir,
     sessionFile: path.join(stateDir, sessionFileName),
+    jobStateFile: path.join(stateDir, jobStateFileName),
     stateDir,
     attachmentsDir
   };
 }
 
-export async function loadSessionId(workspace: ThreadWorkspace): Promise<string | undefined> {
+export async function loadSessionState(workspace: ThreadWorkspace): Promise<SessionState | undefined> {
   try {
     const raw = await readFile(workspace.sessionFile, "utf8");
     const state = JSON.parse(raw) as SessionState;
-    return typeof state.sessionId === "string" && state.sessionId.length > 0
-      ? state.sessionId
-      : undefined;
+    return {
+      sessionId: typeof state.sessionId === "string" && state.sessionId.length > 0 ? state.sessionId : undefined,
+      sessionLogPath: typeof state.sessionLogPath === "string" && state.sessionLogPath.length > 0
+        ? state.sessionLogPath
+        : undefined,
+      updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : new Date(0).toISOString()
+    };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return undefined;
@@ -51,9 +73,18 @@ export async function loadSessionId(workspace: ThreadWorkspace): Promise<string 
   }
 }
 
-export async function saveSessionId(workspace: ThreadWorkspace, sessionId: string): Promise<void> {
+export async function loadSessionId(workspace: ThreadWorkspace): Promise<string | undefined> {
+  return (await loadSessionState(workspace))?.sessionId;
+}
+
+export async function saveSessionId(
+  workspace: ThreadWorkspace,
+  sessionId: string,
+  sessionLogPath?: string
+): Promise<void> {
   const state: SessionState = {
     sessionId,
+    sessionLogPath,
     updatedAt: new Date().toISOString()
   };
   await writeFile(workspace.sessionFile, `${JSON.stringify(state, null, 2)}\n`, "utf8");
@@ -61,6 +92,41 @@ export async function saveSessionId(workspace: ThreadWorkspace, sessionId: strin
 
 export async function resetSession(workspace: ThreadWorkspace): Promise<void> {
   await rm(workspace.sessionFile, { force: true });
+}
+
+export async function loadJobState(workspace: ThreadWorkspace): Promise<StoredJobState | undefined> {
+  try {
+    const raw = await readFile(workspace.jobStateFile, "utf8");
+    const state = JSON.parse(raw) as StoredJobState;
+    return typeof state.jobId === "string" ? state : undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+export async function saveJobState(workspace: ThreadWorkspace, state: StoredJobState): Promise<void> {
+  await writeFile(workspace.jobStateFile, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
+export async function markJobInterrupted(workspace: ThreadWorkspace): Promise<StoredJobState | undefined> {
+  const state = await loadJobState(workspace);
+  if (!state || state.status !== "running") {
+    return state;
+  }
+
+  const interrupted: StoredJobState = {
+    ...state,
+    status: "interrupted",
+    phase: "interrupted",
+    updatedAt: new Date().toISOString(),
+    endedAt: new Date().toISOString(),
+    error: "The service stopped before this job completed."
+  };
+  await saveJobState(workspace, interrupted);
+  return interrupted;
 }
 
 export async function getWorkspaceStats(workspace: ThreadWorkspace): Promise<{

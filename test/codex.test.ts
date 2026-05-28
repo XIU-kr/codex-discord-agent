@@ -187,4 +187,32 @@ describe("runCodex watchdogs", () => {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain("no output");
   });
+
+  test("emits activity events for tool-like JSON records", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "codex-discord-agent-"));
+    const bin = join(dir, "event-codex");
+    await writeFile(
+      bin,
+      [
+        "#!/usr/bin/env node",
+        "console.log(JSON.stringify({ type: 'exec_command', command: 'bun test' }));",
+        "console.log(JSON.stringify({ type: 'agent_message', message: 'done' }));"
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(bin, 0o700);
+
+    const events: string[] = [];
+    const result = await runCodex({
+      codexBin: bin,
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      prompt: "hello",
+      workspaceDir: dir,
+      onEvent: (event) => events.push(`${event.phase}:${event.summary}`)
+    });
+
+    expect(result.content).toBe("done");
+    expect(events.some((event) => event.includes("tool"))).toBe(true);
+  });
 });
