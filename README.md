@@ -251,6 +251,7 @@ Inside a managed thread:
 /codex panel
 /codex status
 /codex settings
+/codex queue
 /codex workspace
 /codex reset
 /codex stop
@@ -259,7 +260,7 @@ Inside a managed thread:
 /codex clean
 ```
 
-Status messages also include Discord buttons for refresh, thread settings, stopping the current job, stopping all queued work, workspace information, logs, and retry actions after failures.
+Status messages also include Discord buttons for refresh, thread settings, queue management, stopping the current job, stopping all queued work, workspace information, logs, and retry actions after failures.
 If the service restarts during a job, the bot marks the last running job as interrupted the next time the thread is used or checked. In-memory queued jobs are not restored after a restart.
 
 ## systemd

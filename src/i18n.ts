@@ -40,6 +40,9 @@ const messages = {
     panelIntro: "Use the controls below to inspect and manage this thread.",
     settingsTitle: "**Thread settings**",
     settingsUpdated: "Thread settings updated.",
+    queueTitle: "**Codex queue**",
+    queueEmpty: "No queued jobs.",
+    queueUpdated: "Queue updated.",
     labels: {
       job: "Job",
       phase: "Phase",
@@ -58,7 +61,10 @@ const messages = {
       size: "Size",
       updated: "Updated",
       hidePaths: "Hide paths",
-      attachments: "Attachments"
+      attachments: "Attachments",
+      author: "Author",
+      created: "Created",
+      selected: "Selected"
     },
     phases: {
       queued: "Queued",
@@ -87,6 +93,10 @@ const messages = {
       refresh: "Refresh status",
       panel: "Control panel",
       settings: "Settings",
+      queue: "Queue",
+      cancelSelected: "Cancel selected",
+      runNext: "Run next",
+      clearQueue: "Clear queue",
       stopCurrent: "Stop current",
       stopAll: "Stop all",
       workspace: "Workspace",
@@ -111,6 +121,7 @@ const messages = {
       "`/codex status` - Show this thread's job status.",
       "`/codex panel` - Show the control panel.",
       "`/codex settings` - Change this thread's model and display settings.",
+      "`/codex queue` - Manage queued jobs.",
       "`/codex workspace` - Show workspace path and size.",
       "`/codex reset` - Start a fresh Codex session for this thread.",
       "`/codex stop` - Stop the running Codex job and clear the queue.",
@@ -155,6 +166,9 @@ const messages = {
     panelIntro: "아래 컨트롤로 이 스레드를 확인하고 관리합니다.",
     settingsTitle: "**스레드 설정**",
     settingsUpdated: "스레드 설정을 변경했습니다.",
+    queueTitle: "**Codex 대기열**",
+    queueEmpty: "대기 중인 작업이 없습니다.",
+    queueUpdated: "대기열을 변경했습니다.",
     labels: {
       job: "작업",
       phase: "단계",
@@ -173,7 +187,10 @@ const messages = {
       size: "크기",
       updated: "갱신",
       hidePaths: "경로 숨김",
-      attachments: "첨부"
+      attachments: "첨부",
+      author: "작성자",
+      created: "생성",
+      selected: "선택됨"
     },
     phases: {
       queued: "대기 중",
@@ -202,6 +219,10 @@ const messages = {
       refresh: "상태 새로고침",
       panel: "컨트롤 패널",
       settings: "설정",
+      queue: "대기열",
+      cancelSelected: "선택 취소",
+      runNext: "다음 실행",
+      clearQueue: "대기열 비우기",
       stopCurrent: "현재 작업 중단",
       stopAll: "전체 중단",
       workspace: "작업공간",
@@ -226,6 +247,7 @@ const messages = {
       "`/codex status` - 현재 스레드의 작업 상태를 봅니다.",
       "`/codex panel` - 컨트롤 패널을 봅니다.",
       "`/codex settings` - 이 스레드의 모델과 표시 설정을 바꿉니다.",
+      "`/codex queue` - 대기 중인 작업을 관리합니다.",
       "`/codex workspace` - 작업 공간 경로와 크기를 봅니다.",
       "`/codex reset` - 현재 스레드의 Codex 세션을 새로 시작합니다.",
       "`/codex stop` - 실행 중인 Codex 작업을 중단하고 대기열을 비웁니다.",

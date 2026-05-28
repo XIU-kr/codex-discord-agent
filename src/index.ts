@@ -29,6 +29,7 @@ import {
   formatCodexResponse,
   formatControlPanelEmbed,
   formatError,
+  formatQueueEmbed,
   formatRunCompleteEmbed,
   formatRunFailedEmbed,
   formatRunStartEmbed,
@@ -86,6 +87,7 @@ interface RunningJob {
 interface ThreadState {
   queue: QueuedJob[];
   running?: RunningJob;
+  selectedQueueJobId?: string;
 }
 
 interface ThreadSettings {
@@ -600,6 +602,9 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
     case "settings":
       await sendThreadSettings(thread);
       return;
+    case "queue":
+      await sendThreadQueue(thread, state);
+      return;
     case "status": {
       await sendThreadStatus(thread, state);
       return;
@@ -720,6 +725,40 @@ async function handleButtonInteraction(interaction: ButtonInteraction, thread: T
         threadId: thread.id
       });
       return;
+    case "codex:queue":
+      await sendThreadQueue(thread, state);
+      await replyToInteraction(interaction, { content: messages.statusRefreshed, ephemeral: true }, discordApiOptions(), {
+        action: "button.queue",
+        threadId: thread.id
+      });
+      return;
+    case "codex:queue:cancel":
+      cancelSelectedQueuedJob(state);
+      await replyToInteraction(interaction, { content: messages.queueUpdated, ephemeral: true }, discordApiOptions(), {
+        action: "button.queue.cancel",
+        threadId: thread.id
+      });
+      await sendThreadQueue(thread, state);
+      return;
+    case "codex:queue:run-next":
+      moveSelectedQueuedJobNext(state);
+      await replyToInteraction(interaction, { content: messages.queueUpdated, ephemeral: true }, discordApiOptions(), {
+        action: "button.queue.run-next",
+        threadId: thread.id
+      });
+      await sendThreadQueue(thread, state);
+      return;
+    case "codex:queue:clear":
+      if (state) {
+        state.queue.length = 0;
+        state.selectedQueueJobId = undefined;
+      }
+      await replyToInteraction(interaction, { content: messages.queueUpdated, ephemeral: true }, discordApiOptions(), {
+        action: "button.queue.clear",
+        threadId: thread.id
+      });
+      await sendThreadQueue(thread, state);
+      return;
     case "codex:stop-current":
       if (state?.running) {
         state.running.stopRequested = true;
@@ -774,6 +813,20 @@ async function handleButtonInteraction(interaction: ButtonInteraction, thread: T
 }
 
 async function handleSelectMenuInteraction(interaction: StringSelectMenuInteraction, thread: ThreadChannel): Promise<void> {
+  if (interaction.customId === "codex:queue:select") {
+    const state = getThreadState(thread.id);
+    state.selectedQueueJobId = interaction.values[0];
+    await interaction.update({
+      embeds: [formatQueueEmbed({
+        jobs: state.queue,
+        selectedJobId: state.selectedQueueJobId
+      }, config.language)],
+      components: queueComponents(state),
+      allowedMentions: { parse: [] }
+    });
+    return;
+  }
+
   const settings = getThreadSettings(thread.id);
   const value = interaction.values[0];
   if (!value) {
@@ -834,7 +887,8 @@ function runningComponents(): ActionRowBuilder<ButtonBuilder>[] {
       new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("codex:settings").setLabel(messages.actions.settings).setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId("codex:settings").setLabel(messages.actions.settings).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:queue").setLabel(messages.actions.queue).setStyle(ButtonStyle.Secondary)
     )
   ];
 }
@@ -845,6 +899,7 @@ function failedComponents(): ActionRowBuilder<ButtonBuilder>[] {
       new ButtonBuilder().setCustomId("codex:retry").setLabel(messages.actions.retry).setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("codex:reset-retry").setLabel(messages.actions.resetRetry).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:settings").setLabel(messages.actions.settings).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:queue").setLabel(messages.actions.queue).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
     )
   ];
@@ -855,10 +910,52 @@ function idleComponents(): ActionRowBuilder<ButtonBuilder>[] {
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId("codex:refresh").setLabel(messages.actions.refresh).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:settings").setLabel(messages.actions.settings).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:queue").setLabel(messages.actions.queue).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:workspace").setLabel(messages.actions.workspace).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
     )
   ];
+}
+
+function queueComponents(state: ThreadState | undefined): ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] {
+  const queue = state?.queue ?? [];
+  const selectedJobId = state?.selectedQueueJobId;
+  const hasSelectedJob = Boolean(selectedJobId && queue.some((job) => job.id === selectedJobId));
+  const rows: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] = [];
+
+  if (queue.length > 0) {
+    rows.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("codex:queue:select")
+        .setPlaceholder(messages.labels.queue)
+        .addOptions(queue.slice(0, 25).map((job, index) => ({
+          label: `${index + 1}. ${job.promptSummary}`.slice(0, 100),
+          description: job.authorName.slice(0, 100),
+          value: job.id,
+          default: job.id === selectedJobId
+        })))
+    ));
+  }
+
+  rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId("codex:queue:run-next")
+      .setLabel(messages.actions.runNext)
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(!hasSelectedJob),
+    new ButtonBuilder()
+      .setCustomId("codex:queue:cancel")
+      .setLabel(messages.actions.cancelSelected)
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(!hasSelectedJob),
+    new ButtonBuilder()
+      .setCustomId("codex:queue:clear")
+      .setLabel(messages.actions.clearQueue)
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(queue.length === 0)
+  ));
+
+  return rows;
 }
 
 function settingsComponents(settings: ThreadSettings): ActionRowBuilder<StringSelectMenuBuilder>[] {
@@ -1042,6 +1139,42 @@ async function sendThreadSettings(thread: ThreadChannel): Promise<void> {
     components: settingsComponents(settings),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "settings.send", threadId: thread.id });
+}
+
+async function sendThreadQueue(thread: ThreadChannel, state: ThreadState | undefined): Promise<void> {
+  await sendThreadMessage(thread, {
+    embeds: [formatQueueEmbed({
+      jobs: state?.queue ?? [],
+      selectedJobId: state?.selectedQueueJobId
+    }, config.language)],
+    components: queueComponents(state),
+    allowedMentions: { parse: [] }
+  }, discordApiOptions(), { action: "queue.send", threadId: thread.id });
+}
+
+function cancelSelectedQueuedJob(state: ThreadState | undefined): void {
+  if (!state?.selectedQueueJobId) {
+    return;
+  }
+  const index = state.queue.findIndex((job) => job.id === state.selectedQueueJobId);
+  if (index >= 0) {
+    state.queue.splice(index, 1);
+  }
+  state.selectedQueueJobId = undefined;
+}
+
+function moveSelectedQueuedJobNext(state: ThreadState | undefined): void {
+  if (!state?.selectedQueueJobId) {
+    return;
+  }
+  const index = state.queue.findIndex((job) => job.id === state.selectedQueueJobId);
+  if (index <= 0) {
+    return;
+  }
+  const [job] = state.queue.splice(index, 1);
+  if (job) {
+    state.queue.unshift(job);
+  }
 }
 
 async function loadOrRecoverSessionId(workspace: Awaited<ReturnType<typeof ensureThreadWorkspace>>): Promise<string | undefined> {

@@ -380,6 +380,47 @@ export function formatSettingsEmbed(options: {
   };
 }
 
+export function formatQueueEmbed(options: {
+  jobs: Array<{
+    id: string;
+    authorName: string;
+    promptSummary: string;
+    createdAt: number;
+    attachmentCount: number;
+  }>;
+  selectedJobId?: string;
+}, language: BotLanguage = "en"): DiscordEmbed {
+  const messages = t(language);
+  const fields: DiscordEmbedField[] = [
+    { name: messages.labels.queued, value: code(String(options.jobs.length)), inline: true }
+  ];
+
+  const selected = options.jobs.find((job) => job.id === options.selectedJobId);
+  if (selected) {
+    fields.push({ name: messages.labels.selected, value: code(selected.id), inline: true });
+  }
+
+  if (options.jobs.length > 0) {
+    fields.push({
+      name: messages.labels.queue,
+      value: options.jobs.slice(0, 10).map((job, index) => [
+        `**${index + 1}. ${escapeMarkdown(job.promptSummary)}**`,
+        `${messages.labels.author}: ${escapeMarkdown(job.authorName)}`,
+        `${messages.labels.created}: ${code(new Date(job.createdAt).toISOString())}`,
+        `${messages.labels.attachments}: ${code(String(job.attachmentCount))}`
+      ].join("\n")).join("\n\n")
+    });
+  }
+
+  return {
+    title: plainTitle(messages.queueTitle),
+    description: options.jobs.length === 0 ? messages.queueEmpty : undefined,
+    color: embedColors.neutral,
+    timestamp: new Date().toISOString(),
+    fields
+  };
+}
+
 export function formatDuration(ms: number, language: BotLanguage = "en"): string {
   const seconds = Math.max(0, Math.round(ms / 1000));
   if (language === "ko") {
@@ -472,6 +513,10 @@ function code(value: string): string {
 
 function plainTitle(value: string): string {
   return value.replace(/^\*\*/, "").replace(/\*\*$/, "");
+}
+
+function escapeMarkdown(value: string): string {
+  return value.replace(/([*_`~|])/g, "\\$1");
 }
 
 function phaseLabel(value: string, language: BotLanguage): string {

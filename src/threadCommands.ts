@@ -4,6 +4,7 @@ export type ThreadCommandName =
   | "help"
   | "panel"
   | "settings"
+  | "queue"
   | "status"
   | "workspace"
   | "reset"
@@ -23,6 +24,8 @@ const commandAliases: Record<string, ThreadCommandName> = {
   controls: "panel",
   settings: "settings",
   config: "settings",
+  queue: "queue",
+  q: "queue",
   status: "status",
   workspace: "workspace",
   reset: "reset",
