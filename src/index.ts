@@ -9,6 +9,7 @@ import {
   Client,
   Events,
   type ButtonInteraction,
+  type ChatInputCommandInteraction,
   GatewayIntentBits,
   type Message,
   StringSelectMenuBuilder,
@@ -185,7 +186,11 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  if ((!interaction.isButton() && !interaction.isStringSelectMenu()) || !interaction.guild || !interaction.channel?.isThread()) {
+  if (
+    (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isChatInputCommand()) ||
+    !interaction.guild ||
+    !interaction.channel?.isThread()
+  ) {
     return;
   }
   const thread = interaction.channel as ThreadChannel;
@@ -201,6 +206,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
   if (interaction.isButton()) {
     await handleButtonInteraction(interaction, thread);
+    return;
+  }
+  if (interaction.isChatInputCommand()) {
+    await handleChatInputCommandInteraction(interaction, thread);
     return;
   }
   await handleSelectMenuInteraction(interaction, thread);
@@ -240,14 +249,16 @@ async function isAllowed(message: Message): Promise<boolean> {
   return isUserAllowed(message.guild, message.author.id, message.member);
 }
 
-async function isInteractionAllowed(interaction: ButtonInteraction | StringSelectMenuInteraction): Promise<boolean> {
+async function isInteractionAllowed(
+  interaction: ButtonInteraction | StringSelectMenuInteraction | ChatInputCommandInteraction
+): Promise<boolean> {
   return isUserAllowed(interaction.guild, interaction.user.id, interaction.member);
 }
 
 async function isUserAllowed(
   guild: Message["guild"],
   userId: string,
-  memberLike: Message["member"] | ButtonInteraction["member"] | StringSelectMenuInteraction["member"]
+  memberLike: Message["member"] | ButtonInteraction["member"] | StringSelectMenuInteraction["member"] | ChatInputCommandInteraction["member"]
 ): Promise<boolean> {
   if (config.allowedUserIds.length === 0 && config.allowedRoleIds.length === 0) {
     return true;
@@ -826,6 +837,31 @@ async function handleButtonInteraction(interaction: ButtonInteraction, thread: T
       });
       return;
   }
+}
+
+async function handleChatInputCommandInteraction(
+  interaction: ChatInputCommandInteraction,
+  thread: ThreadChannel
+): Promise<void> {
+  if (interaction.commandName !== "codex") {
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  const command = parseChatInputCommand(interaction);
+  await handleThreadCommand(thread, command);
+  await interaction.editReply(messages.statusRefreshed);
+}
+
+function parseChatInputCommand(interaction: ChatInputCommandInteraction): ThreadCommand {
+  const subcommand = interaction.options.getSubcommand(false);
+  const commandText =
+    subcommand ??
+    interaction.options.getString("command", false) ??
+    interaction.options.getString("action", false) ??
+    "help";
+
+  return parseThreadCommand(`/codex ${commandText}`) ?? { name: "help", args: [] };
 }
 
 async function handleSelectMenuInteraction(interaction: StringSelectMenuInteraction, thread: ThreadChannel): Promise<void> {
