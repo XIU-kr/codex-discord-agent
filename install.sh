@@ -24,6 +24,8 @@ Environment variables:
   CODEX_DISCORD_AGENT_AUTO_UPDATE   Enable update timer, default: ${ENABLE_AUTO_UPDATE}
   CODEX_DISCORD_AGENT_BUN_BIN       Full Bun path, default: auto-detect
   CODEX_DISCORD_AGENT_CLI_BIN       CLI path, default: ${CLI_BIN}
+  CODEX_DISCORD_AGENT_SKIP_CODEX_SETUP  Skip Codex CLI install/auth check, default: 0
+  CODEX_DISCORD_AGENT_SKIP_CODEX_AUTH   Skip Codex login prompt, default: 0
 USAGE
 }
 
@@ -227,6 +229,14 @@ cd "${INSTALL_DIR}"
 
 if [[ "${CODEX_DISCORD_AGENT_SKIP_CONFIGURE:-0}" != "1" ]]; then
   scripts/configure-env.sh
+fi
+
+if [[ "${CODEX_DISCORD_AGENT_SKIP_CODEX_SETUP:-0}" != "1" ]]; then
+  CODEX_SETUP_ARGS=(--user "${SERVICE_USER}" --env-file "${INSTALL_DIR}/.env")
+  if [[ "${CODEX_DISCORD_AGENT_SKIP_CODEX_AUTH:-0}" == "1" ]]; then
+    CODEX_SETUP_ARGS+=(--no-auth)
+  fi
+  scripts/ensure-codex-cli.sh "${CODEX_SETUP_ARGS[@]}"
 fi
 
 SYSTEMD_ARGS=(--user "${SERVICE_USER}" --bun-bin "${BUN_BIN}")

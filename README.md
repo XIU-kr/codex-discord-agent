@@ -23,20 +23,21 @@ Required:
 - root access or a user with `sudo`
 - Discord server admin permissions
 - a Discord bot token
-- Codex CLI installed and logged in
+- Codex CLI access. The installer checks this, installs the CLI when missing, and guides login for the service user.
 
 The installer checks and installs these system packages when missing:
 
 - `curl`
 - `tar`
 - `unzip`
+- `npm` when Codex CLI must be installed
 
 If you are not root, the installer asks for your `sudo` password at the start. Bun is installed automatically when missing.
 
-Codex must be logged in before the bot can use it:
+Codex must be authenticated before the bot can use it. During installation, the installer checks the service user's Codex login status and can start the login flow. To do it manually:
 
 ```bash
-codex login
+codex login --device-auth
 codex --version
 ```
 
@@ -211,6 +212,18 @@ To skip interactive configuration during install, set:
 
 ```bash
 CODEX_DISCORD_AGENT_SKIP_CONFIGURE=1
+```
+
+To skip the Codex CLI install/auth check during install, set:
+
+```bash
+CODEX_DISCORD_AGENT_SKIP_CODEX_SETUP=1
+```
+
+To install/check the CLI but skip the interactive login prompt, set:
+
+```bash
+CODEX_DISCORD_AGENT_SKIP_CODEX_AUTH=1
 ```
 
 ## Global CLI

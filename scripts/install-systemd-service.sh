@@ -115,6 +115,7 @@ fi
 
 if ! command -v codex >/dev/null 2>&1 && [[ ! -x "${SERVICE_HOME}/.local/bin/codex" ]]; then
   echo "Warning: codex was not found in the current PATH or ${SERVICE_HOME}/.local/bin/codex." >&2
+  echo "Run scripts/ensure-codex-cli.sh --user ${SERVICE_USER} --env-file ${REPO_DIR}/.env before starting the service." >&2
 fi
 
 SERVICE_PATH="$(dirname "${BUN_BIN}"):${SERVICE_HOME}/.local/bin:${SERVICE_HOME}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
