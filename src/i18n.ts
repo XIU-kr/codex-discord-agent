@@ -11,6 +11,7 @@ const messages = {
     runStart: "**Codex job started**",
     runComplete: "**Codex job completed**",
     runFailed: "**Codex job failed**",
+    runStopped: "**Codex job stopped**",
     runRestarted: "**Codex job restarted**",
     longResponseFile: "**Codex response is long, so it is attached as a Markdown file.**",
     workspaceConnected: [
@@ -40,6 +41,7 @@ const messages = {
       session: "Session",
       queued: "Queued",
       elapsed: "Elapsed",
+      idle: "No output",
       running: "Running",
       path: "Path",
       size: "Size",
@@ -76,6 +78,7 @@ const messages = {
     runStart: "**Codex 작업 시작**",
     runComplete: "**Codex 작업 완료**",
     runFailed: "**Codex 작업 실패**",
+    runStopped: "**Codex 작업 중단**",
     runRestarted: "**Codex 작업 재시작**",
     longResponseFile: "**Codex 응답이 길어서 Markdown 파일로 첨부합니다.**",
     workspaceConnected: [
@@ -105,6 +108,7 @@ const messages = {
       session: "세션",
       queued: "대기",
       elapsed: "소요 시간",
+      idle: "무응답",
       running: "실행 중",
       path: "경로",
       size: "크기",

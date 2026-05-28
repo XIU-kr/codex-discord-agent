@@ -19,6 +19,7 @@ import {
   formatRunCompleteEmbed,
   formatRunFailedEmbed,
   formatRunStartEmbed,
+  formatRunStoppedEmbed,
   formatStatusEmbed,
   formatWorkspaceEmbed,
   prefixChunks,
@@ -44,6 +45,7 @@ interface QueuedJob {
 
 interface RunningJob {
   startedAt: number;
+  lastActivityAt: number;
   abortController: AbortController;
   statusMessage?: Message;
   stopRequested?: boolean;
@@ -248,6 +250,7 @@ async function processNextJob(threadId: string): Promise<void> {
   const abortController = new AbortController();
   state.running = {
     startedAt: Date.now(),
+    lastActivityAt: Date.now(),
     abortController,
     job
   };
@@ -314,6 +317,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
         embeds: [formatStatusEmbed({
           running: true,
           elapsedMs: Date.now() - startedAt,
+          idleMs: Date.now() - running.lastActivityAt,
           queued: state.queue.length
         }, config.language)],
         allowedMentions: { parse: [] }
@@ -330,6 +334,14 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       sessionId,
       imagePaths,
       signal: state.running?.abortController.signal,
+      runTimeoutMs: config.codexRunTimeoutMs,
+      idleTimeoutMs: config.codexIdleTimeoutMs,
+      messageHandlerTimeoutMs: config.discordSendTimeoutMs,
+      onActivity: () => {
+        if (state.running) {
+          state.running.lastActivityAt = Date.now();
+        }
+      },
       onMessage: async (content) => {
         streamedMessages += 1;
         await sendFormatted(thread, formatCodexResponse(content, config.language), workspace.stateDir);
@@ -360,6 +372,14 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     const running = state.running;
     if (running?.stopRequested) {
       console.log(`Codex run stopped by user request for thread ${thread.id}`);
+      if (running.statusMessage) {
+        await running.statusMessage.edit({
+          embeds: [formatRunStoppedEmbed({
+            elapsedMs: Date.now() - startedAt
+          }, config.language)],
+          allowedMentions: { parse: [] }
+        }).catch(() => undefined);
+      }
       return;
     }
 
@@ -463,6 +483,7 @@ async function sendThreadStatus(thread: ThreadChannel, state: ThreadState | unde
     embeds: [formatStatusEmbed({
       running: Boolean(running),
       elapsedMs: running ? Date.now() - running.startedAt : undefined,
+      idleMs: running ? Date.now() - running.lastActivityAt : undefined,
       queued: state?.queue.length ?? 0
     }, config.language)],
     allowedMentions: { parse: [] }

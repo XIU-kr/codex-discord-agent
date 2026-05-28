@@ -166,6 +166,9 @@ BASE_WORKSPACE_DIR=./workspaces
 CODEX_BIN=codex
 CODEX_MODEL=gpt-5.5
 CODEX_REASONING_EFFORT=high
+CODEX_RUN_TIMEOUT_SECONDS=2700
+CODEX_IDLE_TIMEOUT_SECONDS=600
+DISCORD_SEND_TIMEOUT_SECONDS=30
 BOT_LANGUAGE=en
 DISCORD_ALLOWED_USER_IDS=
 DISCORD_ALLOWED_ROLE_IDS=
@@ -182,6 +185,9 @@ Configuration reference:
 - `CODEX_BIN`: Codex CLI command or full path.
 - `CODEX_MODEL`: Codex model. Default: `gpt-5.5`.
 - `CODEX_REASONING_EFFORT`: reasoning effort. Default: `high`.
+- `CODEX_RUN_TIMEOUT_SECONDS`: maximum wall-clock time for one Codex job. Default: `2700`. Set `0` to disable.
+- `CODEX_IDLE_TIMEOUT_SECONDS`: maximum time to wait with no Codex output before stopping the job. Default: `600`. Set `0` to disable.
+- `DISCORD_SEND_TIMEOUT_SECONDS`: maximum time to wait while sending a Codex response to Discord. Default: `30`. Set `0` to disable.
 - `BOT_LANGUAGE`: `en` or `ko`. Default: `en`.
 - `DISCORD_ALLOWED_USER_IDS`: comma-separated Discord user IDs allowed to run Codex. Empty means no user allowlist.
 - `DISCORD_ALLOWED_ROLE_IDS`: comma-separated Discord role IDs allowed to run Codex. Empty means no role allowlist.

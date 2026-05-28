@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { buildCodexArgs, parseCodexJsonLine, type CodexParseState } from "../src/codex";
+import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildCodexArgs, parseCodexJsonLine, runCodex, type CodexParseState } from "../src/codex";
 
 describe("buildCodexArgs", () => {
   test("builds first-run command with selected model and full access", () => {
@@ -148,5 +151,40 @@ describe("parseCodexJsonLine", () => {
     );
 
     expect(state.finalMessages).toEqual(["done"]);
+  });
+});
+
+describe("runCodex watchdogs", () => {
+  test("stops a Codex process that produces no output", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "codex-discord-agent-"));
+    const bin = join(dir, "silent-codex");
+    await writeFile(
+      bin,
+      [
+        "#!/usr/bin/env node",
+        "process.stdin.resume();",
+        "process.on('SIGINT', () => process.exit(130));",
+        "setInterval(() => {}, 1000);"
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(bin, 0o700);
+
+    let error: unknown;
+    try {
+      await runCodex({
+        codexBin: bin,
+        model: "gpt-5.5",
+        reasoningEffort: "high",
+        prompt: "hello",
+        workspaceDir: dir,
+        idleTimeoutMs: 50
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("no output");
   });
 });

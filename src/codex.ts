@@ -12,7 +12,11 @@ export interface CodexRunOptions {
   sessionId?: string;
   imagePaths?: string[];
   signal?: AbortSignal;
+  runTimeoutMs?: number;
+  idleTimeoutMs?: number;
+  messageHandlerTimeoutMs?: number;
   onSpawn?: (child: ChildProcessWithoutNullStreams) => void;
+  onActivity?: () => void;
   onMessage?: (content: string) => void | Promise<void>;
 }
 
@@ -36,10 +40,13 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
   });
   options.onSpawn?.(child);
 
-  let aborted = false;
+  let terminationReason: "aborted" | "timeout" | "idle" | undefined;
   let closed = false;
-  const abortHandler = (): void => {
-    aborted = true;
+  let runTimeout: ReturnType<typeof setTimeout> | undefined;
+  let idleTimeout: ReturnType<typeof setTimeout> | undefined;
+
+  const terminate = (reason: "aborted" | "timeout" | "idle"): void => {
+    terminationReason ??= reason;
     child.kill("SIGINT");
     setTimeout(() => {
       if (!closed) {
@@ -47,12 +54,36 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
       }
     }, 5_000).unref();
   };
+  const abortHandler = (): void => terminate("aborted");
+  const markActivity = (): void => {
+    options.onActivity?.();
+    refreshIdleTimeout();
+  };
+  const refreshIdleTimeout = (): void => {
+    if (!options.idleTimeoutMs) {
+      return;
+    }
+    if (idleTimeout) {
+      clearTimeout(idleTimeout);
+    }
+    idleTimeout = setTimeout(() => {
+      terminate("idle");
+    }, options.idleTimeoutMs);
+    idleTimeout.unref();
+  };
 
   if (options.signal?.aborted) {
     abortHandler();
   } else {
     options.signal?.addEventListener("abort", abortHandler, { once: true });
   }
+  if (options.runTimeoutMs) {
+    runTimeout = setTimeout(() => {
+      terminate("timeout");
+    }, options.runTimeoutMs);
+    runTimeout.unref();
+  }
+  refreshIdleTimeout();
 
   child.stdin.write(options.prompt);
   child.stdin.end();
@@ -74,6 +105,7 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
 
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => {
+    markActivity();
     stdoutBuffer += chunk;
     const lines = stdoutBuffer.split(/\r?\n/);
     stdoutBuffer = lines.pop() ?? "";
@@ -85,6 +117,7 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
 
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk: string) => {
+    markActivity();
     stderr += chunk;
   });
 
@@ -96,6 +129,12 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
     });
   }).finally(() => {
     options.signal?.removeEventListener("abort", abortHandler);
+    if (runTimeout) {
+      clearTimeout(runTimeout);
+    }
+    if (idleTimeout) {
+      clearTimeout(idleTimeout);
+    }
     stopSessionLogWatch?.();
   });
 
@@ -106,10 +145,17 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
   await sessionLogWatcher?.done;
   await Promise.all(pendingMessageHandlers);
 
+  if (terminationReason === "aborted") {
+    throw new Error("Codex run was stopped by user request.");
+  }
+  if (terminationReason === "timeout") {
+    throw new Error(`Codex run exceeded the ${formatSeconds(options.runTimeoutMs)} limit and was stopped.`);
+  }
+  if (terminationReason === "idle") {
+    throw new Error(`Codex produced no output for ${formatSeconds(options.idleTimeoutMs)} and was stopped.`);
+  }
+
   if (exitCode !== 0) {
-    if (aborted) {
-      throw new Error("Codex run was stopped by user request.");
-    }
     const message = stderr.trim() || `Codex exited with code ${exitCode ?? "unknown"}.`;
     throw new Error(message);
   }
@@ -123,6 +169,7 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
   };
 
   function parseCodexJsonLineAndNotify(line: string): void {
+    markActivity();
     const previousMessageCount = parseState.finalMessages.length;
     parseCodexJsonLine(line, parseState);
 
@@ -133,7 +180,11 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
       notifiedMessages.add(message);
       const handlerResult = options.onMessage?.(message);
       if (handlerResult) {
-        pendingMessageHandlers.push(Promise.resolve(handlerResult));
+        pendingMessageHandlers.push(withOptionalTimeout(
+          Promise.resolve(handlerResult),
+          options.messageHandlerTimeoutMs,
+          "Timed out while sending a Codex response to Discord."
+        ));
       }
     }
   }
@@ -199,6 +250,37 @@ async function waitForSessionLogPath(sessionId: string): Promise<string | undefi
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withOptionalTimeout<T>(promise: Promise<T>, timeoutMs: number | undefined, message: string): Promise<T> {
+  if (!timeoutMs) {
+    return promise;
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    timer.unref();
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  });
+}
+
+function formatSeconds(ms: number | undefined): string {
+  if (!ms) {
+    return "configured";
+  }
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
 }
 
 export function buildCodexArgs(options: CodexRunOptions): string[] {

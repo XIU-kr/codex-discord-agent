@@ -206,6 +206,20 @@ export function formatRunFailedEmbed(options: {
   };
 }
 
+export function formatRunStoppedEmbed(options: {
+  elapsedMs: number;
+}, language: BotLanguage = "en"): DiscordEmbed {
+  const messages = t(language);
+  return {
+    title: plainTitle(messages.runStopped),
+    color: embedColors.neutral,
+    timestamp: new Date().toISOString(),
+    fields: [
+      { name: messages.labels.elapsed, value: code(formatDuration(options.elapsedMs, language)), inline: true }
+    ]
+  };
+}
+
 export function formatRunRestartedEmbed(options: {
   elapsedMs: number;
   queued: number;
@@ -225,6 +239,7 @@ export function formatRunRestartedEmbed(options: {
 export function formatStatusEmbed(options: {
   running: boolean;
   elapsedMs?: number;
+  idleMs?: number;
   queued: number;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
@@ -237,6 +252,13 @@ export function formatStatusEmbed(options: {
     fields.splice(1, 0, {
       name: messages.labels.elapsed,
       value: code(formatDuration(options.elapsedMs, language)),
+      inline: true
+    });
+  }
+  if (typeof options.idleMs === "number") {
+    fields.splice(2, 0, {
+      name: messages.labels.idle,
+      value: code(formatDuration(options.idleMs, language)),
       inline: true
     });
   }
