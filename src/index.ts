@@ -850,18 +850,29 @@ async function handleChatInputCommandInteraction(
   await interaction.deferReply({ ephemeral: true });
   const command = parseChatInputCommand(interaction);
   await handleThreadCommand(thread, command);
-  await interaction.editReply(messages.statusRefreshed);
+  await interaction.editReply(messages.commandHandled);
 }
 
 function parseChatInputCommand(interaction: ChatInputCommandInteraction): ThreadCommand {
   const subcommand = interaction.options.getSubcommand(false);
-  const commandText =
-    subcommand ??
-    interaction.options.getString("command", false) ??
-    interaction.options.getString("action", false) ??
-    "help";
+  const commandText = subcommand ?? firstStringOptionValue(interaction.options.data) ?? "help";
 
-  return parseThreadCommand(`/codex ${commandText}`) ?? { name: "help", args: [] };
+  return parseThreadCommand(commandText) ?? parseThreadCommand(`/codex ${commandText}`) ?? { name: "help", args: [] };
+}
+
+function firstStringOptionValue(options: readonly { value?: unknown; options?: readonly { value?: unknown; options?: readonly unknown[] }[] }[]): string | undefined {
+  for (const option of options) {
+    if (typeof option.value === "string" && option.value.trim().length > 0) {
+      return option.value.trim();
+    }
+    if (Array.isArray(option.options)) {
+      const nested = firstStringOptionValue(option.options as Parameters<typeof firstStringOptionValue>[0]);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+  return undefined;
 }
 
 async function handleSelectMenuInteraction(interaction: StringSelectMenuInteraction, thread: ThreadChannel): Promise<void> {

@@ -112,6 +112,7 @@ const messages = {
       resetRetry: "Reset + retry"
     },
     statusRefreshed: "Status refreshed.",
+    commandHandled: "Command handled.",
     retryQueued: "Retry queued.",
     resetRetryQueued: "Session reset and retry queued.",
     stopCurrentRequested: "Requested cancellation for the running Codex job. Queued jobs were kept.",
@@ -246,6 +247,7 @@ const messages = {
       resetRetry: "초기화+재시도"
     },
     statusRefreshed: "상태를 새로고침했습니다.",
+    commandHandled: "명령을 처리했습니다.",
     retryQueued: "재시도를 대기열에 추가했습니다.",
     resetRetryQueued: "세션을 초기화하고 재시도를 대기열에 추가했습니다.",
     stopCurrentRequested: "실행 중인 Codex 작업 중단을 요청했습니다. 대기열은 유지했습니다.",
