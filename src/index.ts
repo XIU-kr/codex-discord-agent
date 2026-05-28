@@ -567,10 +567,11 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     await persistRunningJob(state, "failed", error instanceof Error ? error.message : String(error), "failed");
     if (running?.statusMessage) {
       await editDiscordMessage(running.statusMessage, {
-        embeds: [formatRunFailedEmbed({
-          elapsedMs: Date.now() - startedAt,
-          lastEvent: running.lastEvent
-        }, config.language)],
+          embeds: [formatRunFailedEmbed({
+            elapsedMs: Date.now() - startedAt,
+            lastEvent: running.lastEvent,
+            error: error instanceof Error ? error.message : String(error)
+          }, config.language)],
         components: failedComponents(),
         allowedMentions: { parse: [] }
       }, discordApiOptions(), { action: "job.failed.edit", threadId: thread.id, jobId: running.id, phase: "failed" })
@@ -899,7 +900,10 @@ function failedComponents(): ActionRowBuilder<ButtonBuilder>[] {
       new ButtonBuilder().setCustomId("codex:retry").setLabel(messages.actions.retry).setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("codex:reset-retry").setLabel(messages.actions.resetRetry).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:settings").setLabel(messages.actions.settings).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:queue").setLabel(messages.actions.queue).setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("codex:queue").setLabel(messages.actions.queue).setStyle(ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("codex:workspace").setLabel(messages.actions.workspace).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
     )
   ];
@@ -1008,7 +1012,8 @@ function buildStatusEmbed(state: ThreadState, runningFlag: boolean) {
     jobId: running?.id,
     phase: running?.phase,
     lastEvent: running?.lastEvent,
-    timeoutAt: running?.idleDeadlineAt ?? running?.timeoutAt,
+    runTimeoutAt: running?.timeoutAt,
+    idleTimeoutAt: running?.idleDeadlineAt,
     elapsedMs: running ? Date.now() - running.startedAt : undefined,
     idleMs: running ? Date.now() - running.lastActivityAt : undefined,
     queued: state.queue.length,

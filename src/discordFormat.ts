@@ -203,11 +203,16 @@ export function formatRunCompleteEmbed(options: {
 export function formatRunFailedEmbed(options: {
   elapsedMs: number;
   lastEvent?: string;
+  error?: string;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
   const fields: DiscordEmbedField[] = [
     { name: messages.labels.elapsed, value: code(formatDuration(options.elapsedMs, language)), inline: true }
   ];
+  if (options.error) {
+    fields.push({ name: messages.labels.hint, value: friendlyErrorHint(options.error, language) });
+    fields.push({ name: messages.labels.error, value: code(clip(options.error, 900)) });
+  }
   if (options.lastEvent) {
     fields.push({ name: messages.labels.lastEvent, value: code(options.lastEvent) });
   }
@@ -256,6 +261,8 @@ export function formatStatusEmbed(options: {
   phase?: string;
   lastEvent?: string;
   timeoutAt?: number;
+  runTimeoutAt?: number;
+  idleTimeoutAt?: number;
   elapsedMs?: number;
   idleMs?: number;
   queued: number;
@@ -294,6 +301,23 @@ export function formatStatusEmbed(options: {
       value: code(formatDuration(Math.max(0, options.timeoutAt - Date.now()), language)),
       inline: true
     });
+  }
+  if (typeof options.runTimeoutAt === "number") {
+    fields.push({
+      name: messages.labels.runLimit,
+      value: code(formatDuration(Math.max(0, options.runTimeoutAt - Date.now()), language)),
+      inline: true
+    });
+  }
+  if (typeof options.idleTimeoutAt === "number") {
+    fields.push({
+      name: messages.labels.idleLimit,
+      value: code(formatDuration(Math.max(0, options.idleTimeoutAt - Date.now()), language)),
+      inline: true
+    });
+  }
+  if (options.running && options.phase) {
+    fields.push({ name: messages.labels.timeline, value: phaseTimeline(options.phase, language) });
   }
   if (options.lastEvent) {
     fields.push({ name: messages.labels.lastEvent, value: code(options.lastEvent) });
@@ -472,7 +496,7 @@ function splitLongPiece(piece: string, limit: number, activeFenceLang: string | 
 
 export function formatError(error: unknown, language: BotLanguage = "en"): string {
   const message = error instanceof Error ? error.message : String(error);
-  const clipped = message.length > 1500 ? `${message.slice(0, 1500)}...` : message;
+  const clipped = clip(message, 1500);
   const messages = t(language);
   if (language === "ko") {
     return [
@@ -515,6 +539,10 @@ function plainTitle(value: string): string {
   return value.replace(/^\*\*/, "").replace(/\*\*$/, "");
 }
 
+function clip(value: string, limit: number): string {
+  return value.length > limit ? `${value.slice(0, limit)}...` : value;
+}
+
 function escapeMarkdown(value: string): string {
   return value.replace(/([*_`~|])/g, "\\$1");
 }
@@ -522,6 +550,15 @@ function escapeMarkdown(value: string): string {
 function phaseLabel(value: string, language: BotLanguage): string {
   const phases = t(language).phases as Record<string, string>;
   return phases[value] ?? value;
+}
+
+function phaseTimeline(current: string, language: BotLanguage): string {
+  const ordered = ["preparing", "attachments", "codex", "tool", "responding", "sending", "completed"];
+  const phases = t(language).phases as Record<string, string>;
+  return ordered.map((phase) => {
+    const label = phases[phase] ?? phase;
+    return phase === current ? `**${label}**` : label;
+  }).join(" > ");
 }
 
 function friendlyErrorHint(message: string, language: BotLanguage): string {
