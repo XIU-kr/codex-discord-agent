@@ -3,6 +3,7 @@ import {
   type Message,
   type MessageCreateOptions,
   type MessageEditOptions,
+  MessageFlags,
   type RepliableInteraction,
   type ThreadChannel
 } from "discord.js";
@@ -68,15 +69,30 @@ export async function replyToInteraction(
 ): Promise<void> {
   await withDiscordRetry(
     async () => {
+      const replyOptions = normalizeInteractionReplyOptions(options);
       if (interaction.deferred || interaction.replied) {
-        await interaction.followUp(typeof options === "string" ? { content: options, ephemeral: true } : options);
+        await interaction.followUp(replyOptions);
       } else {
-        await interaction.reply(typeof options === "string" ? { content: options, ephemeral: true } : options);
+        await interaction.reply(replyOptions);
       }
     },
     apiOptions,
     context
   );
+}
+
+function normalizeInteractionReplyOptions(options: string | InteractionReplyOptions): InteractionReplyOptions {
+  if (typeof options === "string") {
+    return { content: options, flags: MessageFlags.Ephemeral };
+  }
+
+  const normalized: InteractionReplyOptions = { ...options };
+  const ephemeral = normalized.ephemeral;
+  delete normalized.ephemeral;
+  if (ephemeral && normalized.flags === undefined) {
+    normalized.flags = MessageFlags.Ephemeral;
+  }
+  return normalized;
 }
 
 async function withDiscordRetry<T>(

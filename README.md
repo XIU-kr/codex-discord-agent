@@ -73,9 +73,10 @@ which codex
 
 7. Open **OAuth2 > URL Generator**.
 
-   Select this scope:
+   Select these scopes:
 
    - `bot`
+   - `applications.commands`
 
    Select these bot permissions:
 

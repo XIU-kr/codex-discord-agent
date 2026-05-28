@@ -8,10 +8,12 @@ import {
   ChannelType,
   Client,
   Events,
+  ApplicationCommandOptionType,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   GatewayIntentBits,
   type Message,
+  MessageFlags,
   StringSelectMenuBuilder,
   type StringSelectMenuInteraction,
   type ThreadChannel
@@ -47,7 +49,7 @@ import {
 } from "./discordFormat";
 import { t } from "./i18n";
 import { isStatusQuestion } from "./statusQuestions";
-import { formatCommandHelp, parseThreadCommand, type ThreadCommand } from "./threadCommands";
+import { formatCommandHelp, parseThreadCommand, type ThreadCommand, type ThreadCommandName } from "./threadCommands";
 import {
   cleanStaleWorkspaces,
   ensureThreadWorkspace,
@@ -112,6 +114,56 @@ const messages = t(config.language);
 const threadStates = new Map<string, ThreadState>();
 const retryableJobs = new Map<string, QueuedJob>();
 const threadSettings = new Map<string, ThreadSettings>();
+const slashCommandDescriptions: Record<ThreadCommandName, { en: string; ko: string }> = {
+  help: {
+    en: "Show command help.",
+    ko: "명령어 도움말을 봅니다."
+  },
+  panel: {
+    en: "Show or create the pinned control panel.",
+    ko: "고정 컨트롤 패널을 보거나 만듭니다."
+  },
+  settings: {
+    en: "Change this thread's model and display settings.",
+    ko: "이 스레드의 모델과 표시 설정을 바꿉니다."
+  },
+  queue: {
+    en: "Manage queued jobs.",
+    ko: "대기 중인 작업을 관리합니다."
+  },
+  doctor: {
+    en: "Check Codex, auth, workspace, and access configuration.",
+    ko: "Codex, 인증, 작업 공간, 접근 설정을 점검합니다."
+  },
+  status: {
+    en: "Show this thread's job status.",
+    ko: "현재 스레드의 작업 상태를 봅니다."
+  },
+  workspace: {
+    en: "Show workspace path, session, and size.",
+    ko: "작업 공간 경로, 세션, 크기를 봅니다."
+  },
+  reset: {
+    en: "Start a fresh Codex session for this thread.",
+    ko: "현재 스레드의 Codex 세션을 새로 시작합니다."
+  },
+  stop: {
+    en: "Stop the running job and clear the queue.",
+    ko: "실행 중인 작업을 중단하고 대기열을 비웁니다."
+  },
+  "stop-current": {
+    en: "Stop only the running job and keep the queue.",
+    ko: "실행 중인 작업만 중단하고 대기열은 유지합니다."
+  },
+  logs: {
+    en: "Show server log commands.",
+    ko: "서버 로그 확인 명령을 보여줍니다."
+  },
+  clean: {
+    en: "Remove stale workspaces.",
+    ko: "오래된 작업 공간을 정리합니다."
+  }
+};
 
 const client = new Client({
   intents: [
@@ -127,6 +179,9 @@ client.once(Events.ClientReady, (readyClient) => {
   if (isAllowlistOpen()) {
     console.warn(messages.allowlistWarning);
   }
+  void registerSlashCommands(readyClient).catch((error) => {
+    console.error("Failed to register Discord slash commands", error);
+  });
 });
 
 client.on(Events.ThreadCreate, async (thread) => {
@@ -142,6 +197,21 @@ client.on(Events.ThreadCreate, async (thread) => {
     console.error(`Failed to prepare workspace for thread ${thread.id}`, error);
   }
 });
+
+async function registerSlashCommands(readyClient: Client<true>): Promise<void> {
+  const command = {
+    name: "codex",
+    description: config.language === "ko" ? "Codex 스레드 명령어" : "Codex thread commands",
+    options: (Object.entries(slashCommandDescriptions) as Array<[ThreadCommandName, { en: string; ko: string }]>)
+      .map(([name, description]) => ({
+        type: ApplicationCommandOptionType.Subcommand as const,
+        name,
+        description: description[config.language]
+      }))
+  };
+  const registered = await readyClient.application.commands.set([command], config.discordGuildId);
+  console.log(`Registered ${registered.size} Discord application command(s) for guild ${config.discordGuildId}`);
+}
 
 client.on(Events.MessageCreate, async (message) => {
   if (!shouldHandleMessage(message)) {
@@ -847,7 +917,7 @@ async function handleChatInputCommandInteraction(
     return;
   }
 
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const command = parseChatInputCommand(interaction);
   await handleThreadCommand(thread, command);
   await interaction.editReply(messages.commandHandled);
