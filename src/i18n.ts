@@ -25,6 +25,25 @@ const messages = {
     stopped: "Requested cancellation for the running Codex job and cleared the queue.",
     cleanDone: (removed: number, skipped: number) =>
       `Stale workspace cleanup complete: removed \`${removed}\`, skipped \`${skipped}\``,
+    globalProfileSaved: (preview: string, author: string, updatedAt: string) =>
+      [
+        "**Global thread profile saved**",
+        `Author: \`${author}\``,
+        `Updated: \`${updatedAt}\``,
+        "Applies to every managed thread from the next Codex run.",
+        "",
+        preview
+      ].join("\n"),
+    globalProfileCurrent: (preview: string, author: string, updatedAt: string) =>
+      [
+        "**Current global thread profile**",
+        `Author: \`${author}\``,
+        `Updated: \`${updatedAt}\``,
+        "",
+        preview
+      ].join("\n"),
+    globalProfileCleared: "Global thread profile cleared. Future runs will use only the thread prompt and defaults.",
+    globalProfileEmpty: "No global thread profile is configured.",
     analyzeAttachments: "Analyze the attached files.",
     attachmentPromptIntro: "Attached files saved in the workspace:",
     attachmentKindImage: "image",
@@ -171,6 +190,25 @@ const messages = {
     stopped: "실행 중인 Codex 작업 중단을 요청했고 대기열을 비웠습니다.",
     cleanDone: (removed: number, skipped: number) =>
       `오래된 작업 공간 정리 완료: 삭제 \`${removed}\`, 건너뜀 \`${skipped}\``,
+    globalProfileSaved: (preview: string, author: string, updatedAt: string) =>
+      [
+        "**전체 스레드 프로필 저장됨**",
+        `작성자: \`${author}\``,
+        `갱신: \`${updatedAt}\``,
+        "다음 Codex 실행부터 모든 관리 스레드에 적용됩니다.",
+        "",
+        preview
+      ].join("\n"),
+    globalProfileCurrent: (preview: string, author: string, updatedAt: string) =>
+      [
+        "**현재 전체 스레드 프로필**",
+        `작성자: \`${author}\``,
+        `갱신: \`${updatedAt}\``,
+        "",
+        preview
+      ].join("\n"),
+    globalProfileCleared: "전체 스레드 프로필을 초기화했습니다. 이후 실행은 스레드 프롬프트와 기본값만 사용합니다.",
+    globalProfileEmpty: "설정된 전체 스레드 프로필이 없습니다.",
     analyzeAttachments: "첨부 파일을 분석하세요.",
     attachmentPromptIntro: "첨부 파일이 작업 공간에 저장되었습니다:",
     attachmentKindImage: "이미지",
