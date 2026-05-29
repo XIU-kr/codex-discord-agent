@@ -21,6 +21,7 @@ export interface CodexRunOptions {
   onEvent?: (event: CodexRunEvent) => void;
   onUsage?: (usage: CodexUsage) => void;
   onResponseSnapshot?: (content: string) => void;
+  onTranscriptSnapshot?: (content: string) => void;
   onMessage?: (content: string) => void | Promise<void>;
 }
 
@@ -41,6 +42,14 @@ export interface CodexParseState {
   finalMessages: string[];
   deltaMessages: string[];
   usage?: CodexUsage;
+  toolCalls?: Record<string, CodexToolCall>;
+  toolOutputCallIds?: string[];
+  toolTranscript?: string[];
+}
+
+interface CodexToolCall {
+  name: string;
+  command: string;
 }
 
 export interface CodexTokenUsage {
@@ -128,12 +137,15 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
 
   const parseState: CodexParseState = {
     finalMessages: [],
-    deltaMessages: []
+    deltaMessages: [],
+    toolCalls: {},
+    toolOutputCallIds: [],
+    toolTranscript: []
   };
   const pendingMessageHandlers: Promise<void>[] = [];
   const notifiedMessages = new Set<string>();
   let stopSessionLogWatch: (() => void) | undefined;
-  const sessionLogWatcher = options.sessionId && (options.onMessage || options.onResponseSnapshot)
+  const sessionLogWatcher = options.sessionId && (options.onMessage || options.onResponseSnapshot || options.onTranscriptSnapshot)
     ? watchSessionLog(options.sessionId, parseCodexJsonLineAndNotify, options.sessionLogPath)
     : undefined;
   stopSessionLogWatch = sessionLogWatcher?.stop;
@@ -214,8 +226,12 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
     markActivity();
     const previousMessageCount = parseState.finalMessages.length;
     const previousDeltaCount = parseState.deltaMessages.length;
+    const previousTranscriptCount = parseState.toolTranscript?.length ?? 0;
     const previousUsageSignature = usageSignature(parseState.usage);
     parseCodexJsonLine(line, parseState);
+    if ((parseState.toolTranscript?.length ?? 0) > previousTranscriptCount) {
+      options.onTranscriptSnapshot?.(parseState.toolTranscript?.join("\n\n").trim() ?? "");
+    }
     if (parseState.finalMessages.length > previousMessageCount || parseState.deltaMessages.length > previousDeltaCount) {
       const snapshot = parseState.finalMessages.join("\n\n").trim() || parseState.deltaMessages.join("").trim();
       if (snapshot) {
@@ -388,12 +404,17 @@ function summarizeCodexJsonLine(line: string, producedMessage: boolean): CodexRu
 
 function summarizeToolEvent(event: Record<string, unknown>): string {
   const type = buildType(event).toLowerCase();
+  const payload = isRecord(event.payload) ? event.payload : undefined;
+  const payloadTool = payload && typeof payload.name === "string"
+    ? describeToolCall(payload.name, payload.arguments)
+    : undefined;
   const candidates = [
     event.command,
     event.name,
     event.tool,
-    isRecord(event.payload) ? event.payload.command : undefined,
-    isRecord(event.payload) ? event.payload.name : undefined
+    payload?.command,
+    payloadTool,
+    payload?.name
   ];
   const value = candidates.find((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);
   if (value) {
@@ -467,6 +488,8 @@ export function parseCodexJsonLine(line: string, state: CodexParseState): void {
     state.usage = usage;
   }
 
+  collectToolTranscript(event, state);
+
   const finalMessage = extractFinalAssistantMessage(event);
   if (finalMessage) {
     state.finalMessages.push(finalMessage);
@@ -477,6 +500,125 @@ export function parseCodexJsonLine(line: string, state: CodexParseState): void {
   if (deltaMessage) {
     state.deltaMessages.push(deltaMessage);
   }
+}
+
+function collectToolTranscript(event: unknown, state: CodexParseState): void {
+  if (!isRecord(event)) {
+    return;
+  }
+
+  const payload = isRecord(event.payload) ? event.payload : undefined;
+  const record = payload ?? event;
+  const type = buildType(record).toLowerCase();
+  const callId = stringValue(record.call_id);
+
+  if (type === "function_call" || type === "custom_tool_call") {
+    const name = stringValue(record.name) ?? "tool";
+    if (!callId) {
+      return;
+    }
+    const command = describeToolCall(name, record.arguments);
+    state.toolCalls ??= {};
+    state.toolCalls[callId] = { name, command };
+    appendToolTranscript(state, `• Running \`${inlineTranscript(command)}\``);
+    return;
+  }
+
+  if (!callId && (type.includes("exec") || type.includes("command")) && typeof record.command === "string") {
+    appendToolTranscript(state, `• Running \`${inlineTranscript(record.command)}\``);
+    return;
+  }
+
+  if (type === "function_call_output" || type === "custom_tool_call_output") {
+    if (!callId || hasToolOutput(state, callId)) {
+      return;
+    }
+    const toolCall = state.toolCalls?.[callId];
+    const output = stringValue(record.output) ?? "";
+    appendToolOutput(state, callId, toolCall?.command ?? toolCall?.name ?? "tool", output);
+    return;
+  }
+
+  if (type.endsWith("_end") || type.includes("patch_apply_end")) {
+    if (!callId || hasToolOutput(state, callId)) {
+      return;
+    }
+    const toolCall = state.toolCalls?.[callId];
+    const stdout = stringValue(record.stdout) ?? "";
+    const stderr = stringValue(record.stderr) ?? "";
+    const output = [stdout, stderr].filter(Boolean).join("\n").trim();
+    appendToolOutput(state, callId, toolCall?.command ?? toolCall?.name ?? type, output);
+  }
+}
+
+function describeToolCall(name: string, rawArguments: unknown): string {
+  const args = parseToolArguments(rawArguments);
+  if (name === "exec_command" && isRecord(args) && typeof args.cmd === "string") {
+    return args.cmd;
+  }
+  if (name === "apply_patch") {
+    return "apply_patch";
+  }
+  if (name === "update_plan") {
+    return "update_plan";
+  }
+  if (name === "update_goal") {
+    return "update_goal";
+  }
+  return name;
+}
+
+function parseToolArguments(rawArguments: unknown): unknown {
+  if (typeof rawArguments !== "string") {
+    return rawArguments;
+  }
+  try {
+    return JSON.parse(rawArguments);
+  } catch {
+    return rawArguments;
+  }
+}
+
+function appendToolOutput(state: CodexParseState, callId: string, command: string, output: string): void {
+  state.toolOutputCallIds ??= [];
+  state.toolOutputCallIds.push(callId);
+  const normalizedOutput = summarizeToolOutput(output);
+  appendToolTranscript(state, [`• Ran \`${inlineTranscript(command)}\``, `  └ ${normalizedOutput}`].join("\n"));
+}
+
+function appendToolTranscript(state: CodexParseState, entry: string): void {
+  state.toolTranscript ??= [];
+  state.toolTranscript.push(entry);
+  if (state.toolTranscript.length > 30) {
+    state.toolTranscript.splice(0, state.toolTranscript.length - 30);
+  }
+}
+
+function hasToolOutput(state: CodexParseState, callId: string): boolean {
+  return state.toolOutputCallIds?.includes(callId) ?? false;
+}
+
+function summarizeToolOutput(output: string): string {
+  const normalized = output.trim();
+  if (!normalized) {
+    return "(no output)";
+  }
+  const cleaned = normalized
+    .replace(/^Chunk ID: .*\n/m, "")
+    .replace(/^Wall time: .*\n/m, "")
+    .replace(/^Process exited with code \d+\n/m, "")
+    .replace(/^Original token count: .*\n/m, "")
+    .replace(/^Output:\n/m, "")
+    .replace(/^Output:$/m, "")
+    .trim();
+  if (!cleaned) {
+    return "(no output)";
+  }
+  return cleaned.length > 900 ? `${cleaned.slice(0, 897).trimEnd()}...` : cleaned;
+}
+
+function inlineTranscript(value: string): string {
+  return value.replace(/`/g, "'");
 }
 
 function extractCodexUsage(value: unknown): CodexUsage | undefined {

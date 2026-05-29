@@ -197,6 +197,38 @@ describe("parseCodexJsonLine", () => {
     expect(state.usage?.rateLimits?.secondaryWindowMinutes).toBe(60);
     expect(state.usage?.rateLimits?.planType).toBe("pro");
   });
+
+  test("collects tool command output transcript", () => {
+    const state: CodexParseState = { finalMessages: [], deltaMessages: [] };
+
+    parseCodexJsonLine(
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "git diff --check" }),
+          call_id: "call-1"
+        }
+      }),
+      state
+    );
+    parseCodexJsonLine(
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-1",
+          output: "Chunk ID: abc\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 0\nOutput:\n"
+        }
+      }),
+      state
+    );
+
+    expect(state.toolTranscript?.join("\n")).toContain("Running `git diff --check`");
+    expect(state.toolTranscript?.join("\n")).toContain("Ran `git diff --check`");
+    expect(state.toolTranscript?.join("\n")).toContain("(no output)");
+  });
 });
 
 describe("runCodex watchdogs", () => {
@@ -249,6 +281,7 @@ describe("runCodex watchdogs", () => {
 
     const events: string[] = [];
     const snapshots: string[] = [];
+    const transcripts: string[] = [];
     const result = await runCodex({
       codexBin: bin,
       model: "gpt-5.5",
@@ -256,11 +289,13 @@ describe("runCodex watchdogs", () => {
       prompt: "hello",
       workspaceDir: dir,
       onEvent: (event) => events.push(`${event.phase}:${event.summary}`),
-      onResponseSnapshot: (content) => snapshots.push(content)
+      onResponseSnapshot: (content) => snapshots.push(content),
+      onTranscriptSnapshot: (content) => transcripts.push(content)
     });
 
     expect(result.content).toBe("done");
     expect(events.some((event) => event.includes("Running tests"))).toBe(true);
     expect(snapshots).toContain("done");
+    expect(transcripts.some((transcript) => transcript.includes("bun test"))).toBe(true);
   });
 });

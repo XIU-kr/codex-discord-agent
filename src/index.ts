@@ -101,7 +101,8 @@ interface RunningJob {
   workspace?: ThreadWorkspace;
   usage?: CodexUsage;
   progressEvents: string[];
-  codexOutput?: string;
+  codexResponse?: string;
+  codexTranscript?: string;
   job: QueuedJob;
 }
 
@@ -904,7 +905,13 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       },
       onResponseSnapshot: (content) => {
         if (state.running) {
-          state.running.codexOutput = formatCodexResponse(content, config.language);
+          state.running.codexResponse = formatCodexResponse(content, config.language);
+        }
+        scheduleLiveStatusEdit();
+      },
+      onTranscriptSnapshot: (content) => {
+        if (state.running) {
+          state.running.codexTranscript = content;
         }
         scheduleLiveStatusEdit();
       },
@@ -921,7 +928,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     }
     if (streamedMessages === 0) {
       if (state.running) {
-        state.running.codexOutput = formatCodexResponse(result.content, config.language);
+        state.running.codexResponse = formatCodexResponse(result.content, config.language);
       }
     }
 
@@ -938,7 +945,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
           bytes: stats.bytes,
           usage: result.usage ?? state.running.usage,
           progress: state.running.progressEvents,
-          output: state.running.codexOutput
+          output: buildCodexLiveOutput(state.running)
         }, config.language)],
         components: idleComponents(),
         allowedMentions: { parse: [] }
@@ -966,7 +973,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
         await editDiscordMessage(running.statusMessage, {
           embeds: [formatRunStoppedEmbed({
             elapsedMs: Date.now() - startedAt,
-            output: running.codexOutput
+            output: buildCodexLiveOutput(running)
           }, config.language)],
           components: idleComponents(),
           allowedMentions: { parse: [] }
@@ -985,7 +992,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
             elapsedMs: Date.now() - startedAt,
             lastEvent: running.lastEvent,
             error: error instanceof Error ? error.message : String(error),
-            output: running.codexOutput
+            output: buildCodexLiveOutput(running)
           }, config.language)],
         components: failedComponents(),
         allowedMentions: { parse: [] }
@@ -1606,9 +1613,17 @@ function buildStatusEmbed(state: ThreadState, runningFlag: boolean) {
     queueSummary: formatQueueSummary(state.queue),
     usage: running?.usage,
     progress: running?.progressEvents,
-    output: running?.codexOutput,
+    output: running ? buildCodexLiveOutput(running) : undefined,
     warning: buildOperationalWarning()
   }, config.language);
+}
+
+function buildCodexLiveOutput(running: RunningJob): string | undefined {
+  const sections = [
+    running.codexTranscript ? `Tool output\n${running.codexTranscript}` : "",
+    running.codexResponse ? `Assistant\n${running.codexResponse}` : ""
+  ].filter(Boolean);
+  return sections.length > 0 ? sections.join("\n\n") : undefined;
 }
 
 async function buildIdleStatusEmbed(thread: ThreadChannel, state: ThreadState | undefined) {
