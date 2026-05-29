@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatStatusEmbed, formatUsageEmbed, splitDiscordMessage, summarizeLongResponse } from "../src/discordFormat";
+import { formatCodexResponse, formatStatusEmbed, formatUsageEmbed, splitDiscordMessage, summarizeLongResponse } from "../src/discordFormat";
 
 describe("splitDiscordMessage", () => {
   test("returns a friendly empty response", () => {
@@ -25,7 +25,7 @@ describe("splitDiscordMessage", () => {
     }
   });
 
-  test("formats detailed job status", () => {
+  test("formats compact job status with progress", () => {
     const embed = formatStatusEmbed({
       running: true,
       jobId: "job-1",
@@ -35,11 +35,20 @@ describe("splitDiscordMessage", () => {
       elapsedMs: 1_000,
       idleMs: 500,
       queued: 2,
-      queueSummary: "**1.** user: prompt"
+      queueSummary: "**1.** user: prompt",
+      progress: ["Workspace is ready.", "Running tests: bun test"]
     }, "en");
 
     expect(embed.fields?.some((field) => field.name === "Phase" && field.value.includes("Using tools"))).toBe(true);
     expect(embed.fields?.some((field) => field.name === "Last event")).toBe(true);
+    expect(embed.fields?.some((field) => field.name === "Progress" && field.value.includes("bun test"))).toBe(true);
+    expect(embed.fields?.some((field) => field.name === "Job")).toBe(false);
+    expect(embed.fields?.some((field) => field.name === "Timeline")).toBe(false);
+  });
+
+  test("does not add a repeated response title", () => {
+    expect(formatCodexResponse("hello", "en")).toBe("hello");
+    expect(formatCodexResponse("안녕하세요", "ko")).toBe("안녕하세요");
   });
 
   test("formats Codex usage details", () => {
@@ -62,6 +71,7 @@ describe("splitDiscordMessage", () => {
       rateLimits: {
         primaryUsedPercent: 3,
         secondaryUsedPercent: 5,
+        primaryResetAt: "2026-05-29T00:00:00.000Z",
         planType: "pro"
       }
     }, "en");
@@ -69,6 +79,7 @@ describe("splitDiscordMessage", () => {
     expect(embed.title).toBe("Codex usage");
     expect(embed.fields?.some((field) => field.name === "Total tokens" && field.value.includes("12"))).toBe(true);
     expect(embed.fields?.some((field) => field.name === "Rate limits" && field.value.includes("primary 3%"))).toBe(true);
+    expect(embed.fields?.some((field) => field.name === "Resets" && field.value.includes("2026-05-29"))).toBe(true);
   });
 
   test("summarizes long file responses", () => {

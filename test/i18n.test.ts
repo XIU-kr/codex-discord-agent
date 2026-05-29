@@ -22,9 +22,9 @@ describe("i18n", () => {
 
   test("supports Korean", () => {
     expect(parseLanguage("ko")).toBe("ko");
-    expect(formatCodexResponse("hello", "ko")).toStartWith("**Codex 응답**");
+    expect(formatCodexResponse("hello", "ko")).toBe("hello");
     expect(formatCommandHelp("ko")).toContain("Codex 명령어");
-    expect(formatCommandHelp("ko")).toContain("작업 공간");
+    expect(formatCommandHelp("ko")).toContain("/상태");
   });
 
   test("formats Korean run metadata", () => {

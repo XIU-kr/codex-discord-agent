@@ -101,11 +101,7 @@ export function formatCodexResponse(content: string, language: BotLanguage = "en
     return t(language).emptyResponse;
   }
 
-  if (hasStructuredHeadings(normalized)) {
-    return normalized;
-  }
-
-  return `${t(language).responseTitle}\n${normalized}`;
+  return normalized;
 }
 
 export function formatRunHeader(options: {
@@ -153,17 +149,16 @@ export function formatRunStartEmbed(options: {
   sessionId?: string;
   queued: number;
   warning?: string;
+  progress?: string[];
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
   const fields: DiscordEmbedField[] = [
-    { name: messages.labels.workspace, value: code(options.workspaceDir) },
     { name: messages.labels.model, value: code(options.model), inline: true },
     { name: messages.labels.reasoning, value: code(options.reasoningEffort), inline: true },
-    { name: messages.labels.session, value: code(options.sessionId ?? messages.values.newSession), inline: true },
     { name: messages.labels.queued, value: code(String(options.queued)), inline: true }
   ];
-  if (options.jobId) {
-    fields.unshift({ name: messages.labels.job, value: code(options.jobId), inline: true });
+  if (options.progress && options.progress.length > 0) {
+    fields.push({ name: messages.labels.progress, value: formatProgress(options.progress) });
   }
 
   return {
@@ -181,11 +176,11 @@ export function formatRunCompleteEmbed(options: {
   files?: number;
   bytes?: number;
   usage?: CodexUsage;
+  progress?: string[];
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
   const fields: DiscordEmbedField[] = [
-    { name: messages.labels.elapsed, value: code(formatDuration(options.elapsedMs, language)), inline: true },
-    { name: messages.labels.session, value: code(options.sessionId ?? messages.values.unknown), inline: true }
+    { name: messages.labels.elapsed, value: code(formatDuration(options.elapsedMs, language)), inline: true }
   ];
 
   if (typeof options.files === "number" && typeof options.bytes === "number") {
@@ -194,7 +189,10 @@ export function formatRunCompleteEmbed(options: {
       value: code(`${messages.values.files(options.files)} / ${formatBytes(options.bytes)}`)
     });
   }
-  appendUsageFields(fields, options.usage, language, true);
+  appendUsageFields(fields, options.usage, language, false);
+  if (options.progress && options.progress.length > 0) {
+    fields.push({ name: messages.labels.progress, value: formatProgress(options.progress) });
+  }
 
   return {
     title: plainTitle(messages.runComplete),
@@ -273,6 +271,7 @@ export function formatStatusEmbed(options: {
   queueSummary?: string;
   usage?: CodexUsage;
   warning?: string;
+  progress?: string[];
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
   const fields: DiscordEmbedField[] = [
@@ -280,9 +279,6 @@ export function formatStatusEmbed(options: {
     { name: messages.labels.queued, value: code(String(options.queued)), inline: true }
   ];
 
-  if (options.jobId) {
-    fields.unshift({ name: messages.labels.job, value: code(options.jobId), inline: true });
-  }
   if (options.phase) {
     fields.push({ name: messages.labels.phase, value: code(phaseLabel(options.phase, language)), inline: true });
   }
@@ -293,44 +289,15 @@ export function formatStatusEmbed(options: {
       inline: true
     });
   }
-  if (typeof options.idleMs === "number") {
-    fields.push({
-      name: messages.labels.idle,
-      value: code(formatDuration(options.idleMs, language)),
-      inline: true
-    });
-  }
-  if (typeof options.timeoutAt === "number") {
-    fields.push({
-      name: messages.labels.nextStop,
-      value: code(formatDuration(Math.max(0, options.timeoutAt - Date.now()), language)),
-      inline: true
-    });
-  }
-  if (typeof options.runTimeoutAt === "number") {
-    fields.push({
-      name: messages.labels.runLimit,
-      value: code(formatDuration(Math.max(0, options.runTimeoutAt - Date.now()), language)),
-      inline: true
-    });
-  }
-  if (typeof options.idleTimeoutAt === "number") {
-    fields.push({
-      name: messages.labels.idleLimit,
-      value: code(formatDuration(Math.max(0, options.idleTimeoutAt - Date.now()), language)),
-      inline: true
-    });
-  }
-  if (options.running && options.phase) {
-    fields.push({ name: messages.labels.timeline, value: phaseTimeline(options.phase, language) });
-  }
   if (options.lastEvent) {
     fields.push({ name: messages.labels.lastEvent, value: code(options.lastEvent) });
+  }
+  if (options.progress && options.progress.length > 0) {
+    fields.push({ name: messages.labels.progress, value: formatProgress(options.progress) });
   }
   if (options.queueSummary) {
     fields.push({ name: messages.labels.queue, value: options.queueSummary });
   }
-  appendUsageFields(fields, options.usage, language, false);
 
   return {
     title: plainTitle(messages.statusTitle),
@@ -362,13 +329,14 @@ export function formatControlPanelEmbed(options: {
   queued: number;
   queueSummary?: string;
   warning?: string;
+  progress?: string[];
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
   const status = formatStatusEmbed(options, language);
   return {
     ...status,
     title: plainTitle(messages.panelTitle),
-    description: [messages.panelIntro, options.warning].filter(Boolean).join("\n\n")
+    description: options.warning
   };
 }
 
@@ -519,6 +487,15 @@ function appendUsageFields(
     if (rateParts.length > 0) {
       fields.push({ name: messages.labels.rateLimits, value: code(rateParts.join(" / ")), inline: true });
     }
+    const resetParts = [
+      usage.rateLimits.primaryResetAt ? `primary ${usage.rateLimits.primaryResetAt}` : undefined,
+      usage.rateLimits.secondaryResetAt ? `secondary ${usage.rateLimits.secondaryResetAt}` : undefined
+    ].filter(Boolean);
+    fields.push({
+      name: messages.labels.resets,
+      value: code(resetParts.length > 0 ? resetParts.join(" / ") : messages.values.unknown),
+      inline: true
+    });
     if (usage.rateLimits.planType) {
       fields.push({ name: messages.labels.plan, value: code(usage.rateLimits.planType), inline: true });
     }
@@ -604,7 +581,7 @@ export function formatError(error: unknown, language: BotLanguage = "en"): strin
     return [
       messages.runFailed,
       `무슨 일이 있었는지: ${friendlyErrorHint(message, language)}`,
-      "사용자가 할 수 있는 행동: `/codex status`, `/codex stop`, `/codex logs`를 확인하세요.",
+      "사용자가 할 수 있는 행동: `/상태`, `/중단`, `/로그`를 확인하세요.",
       "```",
       clipped,
       "```"
@@ -613,7 +590,7 @@ export function formatError(error: unknown, language: BotLanguage = "en"): strin
   return [
     messages.runFailed,
     `What happened: ${friendlyErrorHint(message, language)}`,
-    "What you can do: check `/codex status`, `/codex stop`, or `/codex logs`.",
+    "What you can do: check `/status`, `/stop`, or `/logs`.",
     "```",
     clipped,
     "```"
@@ -625,12 +602,8 @@ export function summarizeLongResponse(content: string, language: BotLanguage = "
   const limit = 1200;
   const summary = normalized.length > limit ? `${normalized.slice(0, limit).trimEnd()}...` : normalized;
   return language === "ko"
-    ? `**Codex 응답이 길어서 Markdown 파일로 첨부합니다.**\n\n${summary}`
-    : `**Codex response is long, so it is attached as a Markdown file.**\n\n${summary}`;
-}
-
-function hasStructuredHeadings(content: string): boolean {
-  return /\*\*(Summary|요약|변경|검증|다음|Test|Tests|Changes|Next)/i.test(content);
+    ? `**응답이 길어서 Markdown 파일로 첨부합니다.**\n\n${summary}`
+    : `**The response is long, so it is attached as a Markdown file.**\n\n${summary}`;
 }
 
 function code(value: string): string {
@@ -645,6 +618,10 @@ function clip(value: string, limit: number): string {
   return value.length > limit ? `${value.slice(0, limit)}...` : value;
 }
 
+function formatProgress(progress: string[]): string {
+  return progress.slice(-5).map((event) => `- ${clip(event, 180)}`).join("\n");
+}
+
 function escapeMarkdown(value: string): string {
   return value.replace(/([*_`~|])/g, "\\$1");
 }
@@ -656,15 +633,6 @@ function statusLabel(status: DoctorCheck["status"]): string {
 function phaseLabel(value: string, language: BotLanguage): string {
   const phases = t(language).phases as Record<string, string>;
   return phases[value] ?? value;
-}
-
-function phaseTimeline(current: string, language: BotLanguage): string {
-  const ordered = ["preparing", "attachments", "codex", "tool", "responding", "sending", "completed"];
-  const phases = t(language).phases as Record<string, string>;
-  return ordered.map((phase) => {
-    const label = phases[phase] ?? phase;
-    return phase === current ? `**${label}**` : label;
-  }).join(" > ");
 }
 
 function friendlyErrorHint(message: string, language: BotLanguage): string {

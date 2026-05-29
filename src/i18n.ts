@@ -7,18 +7,18 @@ export function parseLanguage(value: string | undefined): BotLanguage {
 const messages = {
   en: {
     emptyResponse: "_Codex returned an empty response._",
-    responseTitle: "**Codex response**",
+    responseTitle: "**Response**",
     runStart: "**Codex job started**",
     runComplete: "**Codex job completed**",
     runFailed: "**Codex job failed**",
     runStopped: "**Codex job stopped**",
     runInterrupted: "**Previous Codex job was interrupted**",
     runRestarted: "**Codex job restarted**",
-    longResponseFile: "**Codex response is long, so it is attached as a Markdown file.**",
+    longResponseFile: "**The response is long, so it is attached as a Markdown file.**",
     workspaceConnected: [
       "**Codex workspace connected**",
       "This thread now uses an isolated Codex workspace and session.",
-      "Send a message to start Codex, or use `/codex help` for commands."
+      "Send a message to start Codex, or use `/help` for commands."
     ],
     denied: "You are not allowed to run Codex in this thread.",
     reset: "Reset this thread's Codex session. The next prompt will start a new session.",
@@ -37,7 +37,7 @@ const messages = {
     logsTitle: "**Logs**",
     logsIntro: "Run one of these commands on the server to inspect logs.",
     panelTitle: "**Codex control panel**",
-    panelIntro: "Use the controls below to inspect and manage this thread.",
+    panelIntro: "",
     settingsTitle: "**Thread settings**",
     settingsUpdated: "Thread settings updated.",
     usageTitle: "**Codex usage**",
@@ -74,6 +74,7 @@ const messages = {
       created: "Created",
       selected: "Selected",
       usage: "Usage",
+      progress: "Progress",
       totalTokens: "Total tokens",
       lastTokens: "Last turn",
       inputTokens: "Input",
@@ -82,6 +83,7 @@ const messages = {
       reasoningTokens: "Reasoning",
       contextWindow: "Context window",
       rateLimits: "Rate limits",
+      resets: "Resets",
       plan: "Plan"
     },
     phases: {
@@ -108,7 +110,7 @@ const messages = {
       files: (count: number) => `${count} files`
     },
     actions: {
-      refresh: "Refresh status",
+      refresh: "Refresh",
       panel: "Control panel",
       settings: "Settings",
       queue: "Queue",
@@ -117,7 +119,7 @@ const messages = {
       clearQueue: "Clear queue",
       doctor: "Doctor",
       usage: "Usage",
-      stopCurrent: "Stop current",
+      stopCurrent: "Stop",
       stopAll: "Stop all",
       workspace: "Workspace",
       logs: "Logs",
@@ -139,35 +141,30 @@ const messages = {
     errorHintStopped: "The run was stopped by user request.",
     commandHelp: [
       "**Codex commands**",
-      "`/codex status` - Show this thread's job status.",
-      "`/codex panel` - Show the control panel.",
-      "`/codex settings` - Change this thread's model and display settings.",
-      "`/codex queue` - Manage queued jobs.",
-      "`/codex doctor` - Check Codex, auth, workspace, and access configuration.",
-      "`/codex usage` - Show this thread's latest Codex token usage.",
-      "`/codex workspace` - Show workspace path and size.",
-      "`/codex reset` - Start a fresh Codex session for this thread.",
-      "`/codex stop` - Stop the running Codex job and clear the queue.",
-      "`/codex stop-current` - Stop the running Codex job and keep the queue.",
-      "`/codex logs` - Show server log commands.",
-      "`/codex clean` - Remove stale workspaces.",
-      "`/codex help` - Show this help."
+      "`/status` - Show this thread's job status.",
+      "`/settings` - Change this thread's model and display settings.",
+      "`/usage` - Show Codex token usage and rate limits.",
+      "`/logs` - Show server log commands.",
+      "`/queue` - Manage queued jobs.",
+      "`/stop` - Stop the running Codex job and clear the queue.",
+      "`/reset` - Start a fresh Codex session for this thread.",
+      "`/help` - Show this help."
     ]
   },
   ko: {
     emptyResponse: "_Codex가 빈 응답을 반환했습니다._",
-    responseTitle: "**Codex 응답**",
+    responseTitle: "**응답**",
     runStart: "**Codex 작업 시작**",
     runComplete: "**Codex 작업 완료**",
     runFailed: "**Codex 작업 실패**",
     runStopped: "**Codex 작업 중단**",
     runInterrupted: "**이전 Codex 작업 중단됨**",
     runRestarted: "**Codex 작업 재시작**",
-    longResponseFile: "**Codex 응답이 길어서 Markdown 파일로 첨부합니다.**",
+    longResponseFile: "**응답이 길어서 Markdown 파일로 첨부합니다.**",
     workspaceConnected: [
       "**Codex 작업 공간 연결됨**",
       "이 스레드는 독립된 Codex 작업 공간과 세션을 사용합니다.",
-      "메시지를 보내면 Codex가 작업을 시작합니다. `/codex help`로 명령어를 볼 수 있습니다."
+      "메시지를 보내면 Codex가 작업을 시작합니다. `/도움말`로 명령어를 볼 수 있습니다."
     ],
     denied: "이 스레드에서 Codex를 실행할 권한이 없습니다.",
     reset: "현재 스레드의 Codex 세션을 초기화했습니다. 다음 메시지는 새 세션으로 시작합니다.",
@@ -186,7 +183,7 @@ const messages = {
     logsTitle: "**로그**",
     logsIntro: "서버에서 다음 명령으로 로그를 확인하세요.",
     panelTitle: "**Codex 컨트롤 패널**",
-    panelIntro: "아래 컨트롤로 이 스레드를 확인하고 관리합니다.",
+    panelIntro: "",
     settingsTitle: "**스레드 설정**",
     settingsUpdated: "스레드 설정을 변경했습니다.",
     usageTitle: "**Codex 사용량**",
@@ -223,6 +220,7 @@ const messages = {
       created: "생성",
       selected: "선택됨",
       usage: "사용량",
+      progress: "진행 내역",
       totalTokens: "총 토큰",
       lastTokens: "최근 턴",
       inputTokens: "입력",
@@ -231,6 +229,7 @@ const messages = {
       reasoningTokens: "추론",
       contextWindow: "컨텍스트 창",
       rateLimits: "사용 제한",
+      resets: "초기화",
       plan: "플랜"
     },
     phases: {
@@ -257,7 +256,7 @@ const messages = {
       files: (count: number) => `${count}개 파일`
     },
     actions: {
-      refresh: "상태 새로고침",
+      refresh: "새로고침",
       panel: "컨트롤 패널",
       settings: "설정",
       queue: "대기열",
@@ -266,7 +265,7 @@ const messages = {
       clearQueue: "대기열 비우기",
       doctor: "진단",
       usage: "사용량",
-      stopCurrent: "현재 작업 중단",
+      stopCurrent: "중단",
       stopAll: "전체 중단",
       workspace: "작업공간",
       logs: "로그",
@@ -288,19 +287,14 @@ const messages = {
     errorHintStopped: "사용자 요청으로 실행을 중단했습니다.",
     commandHelp: [
       "**Codex 명령어**",
-      "`/codex status` - 현재 스레드의 작업 상태를 봅니다.",
-      "`/codex panel` - 컨트롤 패널을 봅니다.",
-      "`/codex settings` - 이 스레드의 모델과 표시 설정을 바꿉니다.",
-      "`/codex queue` - 대기 중인 작업을 관리합니다.",
-      "`/codex doctor` - Codex, 인증, 작업 공간, 접근 설정을 점검합니다.",
-      "`/codex usage` - 이 스레드의 최근 Codex 토큰 사용량을 봅니다.",
-      "`/codex workspace` - 작업 공간 경로와 크기를 봅니다.",
-      "`/codex reset` - 현재 스레드의 Codex 세션을 새로 시작합니다.",
-      "`/codex stop` - 실행 중인 Codex 작업을 중단하고 대기열을 비웁니다.",
-      "`/codex stop-current` - 실행 중인 Codex 작업만 중단하고 대기열은 유지합니다.",
-      "`/codex logs` - systemd 로그 확인 명령을 보여줍니다.",
-      "`/codex clean` - 오래된 작업 공간을 정리합니다.",
-      "`/codex help` - 도움말을 봅니다."
+      "`/상태` - 현재 스레드의 작업 상태를 봅니다.",
+      "`/설정` - 이 스레드의 모델과 표시 설정을 바꿉니다.",
+      "`/사용량` - Codex 토큰 사용량과 제한을 봅니다.",
+      "`/로그` - systemd 로그 확인 명령을 보여줍니다.",
+      "`/대기열` - 대기 중인 작업을 관리합니다.",
+      "`/중단` - 실행 중인 Codex 작업을 중단하고 대기열을 비웁니다.",
+      "`/초기화` - 현재 스레드의 Codex 세션을 새로 시작합니다.",
+      "`/도움말` - 도움말을 봅니다."
     ]
   }
 } as const;
