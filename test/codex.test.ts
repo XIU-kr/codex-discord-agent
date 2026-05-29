@@ -248,16 +248,19 @@ describe("runCodex watchdogs", () => {
     await chmod(bin, 0o700);
 
     const events: string[] = [];
+    const snapshots: string[] = [];
     const result = await runCodex({
       codexBin: bin,
       model: "gpt-5.5",
       reasoningEffort: "high",
       prompt: "hello",
       workspaceDir: dir,
-      onEvent: (event) => events.push(`${event.phase}:${event.summary}`)
+      onEvent: (event) => events.push(`${event.phase}:${event.summary}`),
+      onResponseSnapshot: (content) => snapshots.push(content)
     });
 
     expect(result.content).toBe("done");
     expect(events.some((event) => event.includes("Running tests"))).toBe(true);
+    expect(snapshots).toContain("done");
   });
 });

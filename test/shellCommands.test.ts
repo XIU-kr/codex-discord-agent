@@ -3,16 +3,19 @@ import { runShellCommand, validateShellCommand } from "../src/shellCommands";
 
 describe("shell commands", () => {
   test("runs a command and captures output", async () => {
+    const snapshots: string[] = [];
     const result = await runShellCommand("printf 'hello'", {
       cwd: process.cwd(),
       timeoutMs: 2_000,
-      maxOutputBytes: 10_000
+      maxOutputBytes: 10_000,
+      onOutput: (snapshot) => snapshots.push(snapshot.output)
     });
 
     expect(result.blockedReason).toBeUndefined();
     expect(result.exitCode).toBe(0);
     expect(result.output).toBe("hello");
     expect(result.timedOut).toBe(false);
+    expect(snapshots).toContain("hello");
   });
 
   test("captures non-zero exits", async () => {

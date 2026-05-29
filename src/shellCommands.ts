@@ -5,6 +5,16 @@ export interface ShellCommandOptions {
   timeoutMs: number;
   maxOutputBytes: number;
   env?: NodeJS.ProcessEnv;
+  onOutput?: (snapshot: ShellCommandSnapshot) => void;
+}
+
+export interface ShellCommandSnapshot {
+  command: string;
+  cwd: string;
+  durationMs: number;
+  output: string;
+  timedOut: boolean;
+  truncated: boolean;
 }
 
 export interface ShellCommandResult {
@@ -106,6 +116,7 @@ export async function runShellCommand(command: string, options: ShellCommandOpti
     const appendOutput = (chunk: string): void => {
       if (outputBytes >= options.maxOutputBytes) {
         truncated = true;
+        emitOutput();
         return;
       }
       const buffer = Buffer.from(chunk, "utf8");
@@ -114,10 +125,23 @@ export async function runShellCommand(command: string, options: ShellCommandOpti
         output += buffer.subarray(0, available).toString("utf8");
         outputBytes = options.maxOutputBytes;
         truncated = true;
+        emitOutput();
         return;
       }
       output += chunk;
       outputBytes += buffer.byteLength;
+      emitOutput();
+    };
+
+    const emitOutput = (): void => {
+      options.onOutput?.({
+        command,
+        cwd: options.cwd,
+        durationMs: Date.now() - startedAt,
+        output: output.trimEnd(),
+        timedOut,
+        truncated
+      });
     };
 
     child.stdout.setEncoding("utf8");

@@ -304,7 +304,7 @@ Inside a managed thread:
 /터미널 <명령>
 ```
 
-The bot creates one pinned control panel per managed thread when the thread is created or first used. Running status messages keep only the common controls: refresh and stop. Failed jobs show retry. Settings, usage, logs, queue, doctor checks, workspace details, and server shell commands are available through slash commands. Shell commands require a configured Discord allowlist; if both allowlist variables are empty, `/shell` is disabled.
+The bot creates one pinned control panel per managed thread when the thread is created or first used. Each Codex run uses a single status embed that is edited in place as progress events and assistant output arrive, so the thread does not fill with partial response messages. Running status messages keep only the common controls: refresh and stop. Failed jobs show retry. Settings, usage, logs, queue, doctor checks, workspace details, and server shell commands are available through slash commands. Shell commands require a configured Discord allowlist; if both allowlist variables are empty, `/shell` is disabled.
 If the service restarts during a job, the bot marks the last running job as interrupted the next time the thread is used or checked. In-memory queued jobs are not restored after a restart.
 
 ## systemd

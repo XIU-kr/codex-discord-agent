@@ -1,9 +1,7 @@
-import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   ActionRowBuilder,
   ApplicationCommandOptionType,
-  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -34,7 +32,6 @@ import {
   formatCodexResponse,
   formatControlPanelEmbed,
   formatDoctorEmbed,
-  formatError,
   formatQueueEmbed,
   formatRunCompleteEmbed,
   formatRunFailedEmbed,
@@ -44,14 +41,10 @@ import {
   formatStatusEmbed,
   formatUsageEmbed,
   formatWorkspaceEmbed,
-  prefixChunks,
-  shouldSendAsFile,
-  splitDiscordMessage,
-  summarizeLongResponse
 } from "./discordFormat";
 import { t } from "./i18n";
 import { buildCodexPrompt } from "./prompts";
-import { runShellCommand, type ShellCommandResult } from "./shellCommands";
+import { runShellCommand, type ShellCommandResult, type ShellCommandSnapshot } from "./shellCommands";
 import { isStatusQuestion } from "./statusQuestions";
 import { commandNameFromAlias, formatCommandHelp, parseThreadCommand, type ThreadCommand, type ThreadCommandName } from "./threadCommands";
 import {
@@ -102,6 +95,7 @@ interface RunningJob {
   workspace?: ThreadWorkspace;
   usage?: CodexUsage;
   progressEvents: string[];
+  codexOutput?: string;
   job: QueuedJob;
 }
 
@@ -681,6 +675,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
   const stopTyping = startTyping(thread);
   const startedAt = Date.now();
   let refreshStatus: ReturnType<typeof setInterval> | undefined;
+  let liveStatusEdit: ReturnType<typeof setTimeout> | undefined;
 
   try {
     const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
@@ -737,6 +732,28 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     }
     await editRunningStatus(thread, state);
 
+    const scheduleLiveStatusEdit = (force = false): void => {
+      if (!state.running?.statusMessage) {
+        return;
+      }
+      if (force) {
+        if (liveStatusEdit) {
+          clearTimeout(liveStatusEdit);
+          liveStatusEdit = undefined;
+        }
+        void editRunningStatus(thread, state);
+        return;
+      }
+      if (liveStatusEdit) {
+        return;
+      }
+      liveStatusEdit = setTimeout(() => {
+        liveStatusEdit = undefined;
+        void editRunningStatus(thread, state);
+      }, 1_000);
+      liveStatusEdit.unref();
+    };
+
     refreshStatus = setInterval(() => {
       const running = state.running;
       if (!running?.statusMessage) {
@@ -778,7 +795,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       },
       onEvent: (event) => {
         void persistRunningJob(state, event.phase, event.summary)
-          .then(() => editRunningStatus(thread, state));
+          .then(() => scheduleLiveStatusEdit());
       },
       onUsage: (usage) => {
         if (state.running) {
@@ -788,11 +805,14 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
           console.warn("Failed to persist Codex usage state", error);
         });
       },
-      onMessage: async (content) => {
+      onResponseSnapshot: (content) => {
+        if (state.running) {
+          state.running.codexOutput = formatCodexResponse(content, config.language);
+        }
+        scheduleLiveStatusEdit();
+      },
+      onMessage: async () => {
         streamedMessages += 1;
-        await persistRunningJob(state, "sending", "Sending response to Discord.");
-        await editRunningStatus(thread, state);
-        await sendFormatted(thread, formatCodexResponse(content, config.language), workspace.stateDir);
       }
     });
 
@@ -803,12 +823,13 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       await saveUsageState(workspace, result.usage);
     }
     if (streamedMessages === 0) {
-      await persistRunningJob(state, "sending", "Sending final response to Discord.");
-      await editRunningStatus(thread, state);
-      await sendFormatted(thread, formatCodexResponse(result.content, config.language), workspace.stateDir);
+      if (state.running) {
+        state.running.codexOutput = formatCodexResponse(result.content, config.language);
+      }
     }
 
     await persistRunningJob(state, "completed", "Codex job completed.", "completed");
+    scheduleLiveStatusEdit(true);
 
     if (state.running?.statusMessage) {
       const stats = await getWorkspaceStats(workspace);
@@ -819,7 +840,8 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
           files: stats.files,
           bytes: stats.bytes,
           usage: result.usage ?? state.running.usage,
-          progress: state.running.progressEvents
+          progress: state.running.progressEvents,
+          output: state.running.codexOutput
         }, config.language)],
         components: idleComponents(),
         allowedMentions: { parse: [] }
@@ -846,7 +868,8 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       if (running.statusMessage) {
         await editDiscordMessage(running.statusMessage, {
           embeds: [formatRunStoppedEmbed({
-            elapsedMs: Date.now() - startedAt
+            elapsedMs: Date.now() - startedAt,
+            output: running.codexOutput
           }, config.language)],
           components: idleComponents(),
           allowedMentions: { parse: [] }
@@ -864,17 +887,20 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
           embeds: [formatRunFailedEmbed({
             elapsedMs: Date.now() - startedAt,
             lastEvent: running.lastEvent,
-            error: error instanceof Error ? error.message : String(error)
+            error: error instanceof Error ? error.message : String(error),
+            output: running.codexOutput
           }, config.language)],
         components: failedComponents(),
         allowedMentions: { parse: [] }
       }, discordApiOptions(), { action: "job.failed.edit", threadId: thread.id, jobId: running.id, phase: "failed" })
         .catch(() => undefined);
     }
-    await sendFormatted(thread, formatError(error, config.language));
   } finally {
     if (refreshStatus) {
       clearInterval(refreshStatus);
+    }
+    if (liveStatusEdit) {
+      clearTimeout(liveStatusEdit);
     }
     stopTyping();
   }
@@ -983,12 +1009,12 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
       return;
     }
     case "shell":
-      await handleShellCommand(thread, command.rawArgs ?? command.args.join(" "), workspace);
+      await handleShellCommand(thread, command.rawArgs ?? command.args.join(" "));
       return;
   }
 }
 
-async function handleShellCommand(thread: ThreadChannel, commandText: string, workspace: ThreadWorkspace): Promise<void> {
+async function handleShellCommand(thread: ThreadChannel, commandText: string): Promise<void> {
   const command = commandText.trim();
   if (isAllowlistOpen()) {
     await sendThreadMessage(thread, {
@@ -1008,13 +1034,59 @@ async function handleShellCommand(thread: ThreadChannel, commandText: string, wo
   }
 
   await sendThreadTyping(thread, discordApiOptions(), { action: "command.shell.typing", threadId: thread.id });
+  const statusMessage = await sendThreadMessage(thread, {
+    embeds: [formatShellCommandEmbed({
+      command,
+      cwd: process.cwd(),
+      durationMs: 0,
+      output: "",
+      timedOut: false,
+      truncated: false
+    }, "running")],
+    allowedMentions: { parse: [] }
+  }, discordApiOptions(), { action: "command.shell.start", threadId: thread.id });
+  let lastEditAt = 0;
+  let pendingEdit: ReturnType<typeof setTimeout> | undefined;
+  let queuedSnapshot: ShellCommandSnapshot | undefined;
+
+  const editShellEmbed = (snapshot: ShellCommandSnapshot, force = false): void => {
+    const now = Date.now();
+    const elapsed = now - lastEditAt;
+    if (!force && elapsed < 1_000) {
+      queuedSnapshot = snapshot;
+      if (!pendingEdit) {
+        pendingEdit = setTimeout(() => {
+          pendingEdit = undefined;
+          if (queuedSnapshot) {
+            editShellEmbed(queuedSnapshot, true);
+            queuedSnapshot = undefined;
+          }
+        }, 1_000 - elapsed);
+        pendingEdit.unref();
+      }
+      return;
+    }
+    lastEditAt = now;
+    void editDiscordMessage(statusMessage, {
+      embeds: [formatShellCommandEmbed(snapshot, "running")],
+      allowedMentions: { parse: [] }
+    }, discordApiOptions(), { action: "command.shell.update", threadId: thread.id }).catch(() => undefined);
+  };
+
   const result = await runShellCommand(command, {
     cwd: process.cwd(),
     timeoutMs: config.shellCommandTimeoutMs,
     maxOutputBytes: config.shellCommandMaxOutputBytes,
-    env: process.env
+    env: process.env,
+    onOutput: editShellEmbed
   });
-  await sendFormatted(thread, formatShellCommandResult(result), workspace.stateDir, "shell-output.md");
+  if (pendingEdit) {
+    clearTimeout(pendingEdit);
+  }
+  await editDiscordMessage(statusMessage, {
+    embeds: [formatShellCommandEmbed(result, result.blockedReason ? "blocked" : "complete")],
+    allowedMentions: { parse: [] }
+  }, discordApiOptions(), { action: "command.shell.complete", threadId: thread.id });
 }
 
 async function notifyInterruptedIfAny(thread: ThreadChannel): Promise<void> {
@@ -1385,6 +1457,7 @@ function buildStatusEmbed(state: ThreadState, runningFlag: boolean) {
     queueSummary: formatQueueSummary(state.queue),
     usage: running?.usage,
     progress: running?.progressEvents,
+    output: running?.codexOutput,
     warning: buildOperationalWarning()
   }, config.language);
 }
@@ -1705,38 +1778,6 @@ function shellCommandDeniedMessage(): string {
     ].join("\n");
 }
 
-function formatShellCommandResult(result: ShellCommandResult): string {
-  if (result.blockedReason) {
-    return [
-      config.language === "ko" ? "**서버 셸 명령 차단됨**" : "**Server shell command blocked**",
-      `${config.language === "ko" ? "사유" : "Reason"}: ${result.blockedReason}`,
-      `${config.language === "ko" ? "명령" : "Command"}: \`${inlineCode(result.command)}\``
-    ].join("\n");
-  }
-
-  const status = result.timedOut
-    ? config.language === "ko" ? "timeout" : "timeout"
-    : result.signal
-      ? `signal ${result.signal}`
-      : `exit ${result.exitCode ?? "unknown"}`;
-  const output = result.output.trim() || (config.language === "ko" ? "(출력 없음)" : "(no output)");
-  const truncated = result.truncated
-    ? config.language === "ko"
-      ? "\n\n_출력이 잘렸습니다._"
-      : "\n\n_Output was truncated._"
-    : "";
-
-  return [
-    config.language === "ko" ? "**서버 셸 명령 완료**" : "**Server shell command complete**",
-    `${config.language === "ko" ? "명령" : "Command"}: \`${inlineCode(result.command)}\``,
-    `${config.language === "ko" ? "상태" : "Status"}: \`${status}\``,
-    `${config.language === "ko" ? "시간" : "Duration"}: \`${formatShellDuration(result.durationMs)}\``,
-    "```text",
-    escapeCodeFence(output),
-    `\`\`\`${truncated}`
-  ].join("\n");
-}
-
 function inlineCode(value: string): string {
   return value.replace(/`/g, "'");
 }
@@ -1752,28 +1793,71 @@ function formatShellDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-async function sendFormatted(
-  thread: ThreadChannel,
-  content: string,
-  fileDir?: string,
-  fileName = "codex-response.md"
-): Promise<void> {
-  if (fileDir && shouldSendAsFile(content, config.language)) {
-    await mkdir(fileDir, { recursive: true });
-    const filePath = path.join(fileDir, `response-${Date.now()}.md`);
-    await writeFile(filePath, `${content.trim()}\n`, "utf8");
-    await sendThreadMessage(thread, {
-      content: summarizeLongResponse(content, config.language),
-      files: [new AttachmentBuilder(filePath, { name: fileName })],
-      allowedMentions: { parse: [] }
-    }, discordApiOptions(), { action: "response.file", threadId: thread.id });
-    return;
-  }
+function formatShellCommandEmbed(
+  result: ShellCommandSnapshot | ShellCommandResult,
+  phase: "running" | "complete" | "blocked"
+): { title: string; description: string; color: number; timestamp: string } {
+  const isKorean = config.language === "ko";
+  const blockedReason = "blockedReason" in result ? result.blockedReason : undefined;
+  const status = blockedReason
+    ? isKorean ? "차단됨" : "blocked"
+    : phase === "running"
+      ? isKorean ? "실행 중" : "running"
+      : shellExitStatus(result);
+  const output = blockedReason
+    ? blockedReason
+    : result.output.trim() || (phase === "running" ? isKorean ? "출력을 기다리는 중..." : "Waiting for output..." : isKorean ? "(출력 없음)" : "(no output)");
+  const omitted = result.truncated || escapeCodeFence(output).length > 3_200;
+  const outputLabel = omitted ? isKorean ? "(마지막 출력)" : "(latest output)" : "";
+  const header = [
+    `${isKorean ? "명령" : "Command"}: \`${inlineCode(clip(result.command, 320))}\``,
+    `${isKorean ? "상태" : "Status"}: \`${status}\``,
+    `${isKorean ? "시간" : "Duration"}: \`${formatShellDuration(result.durationMs)}\``,
+    "",
+    `\`\`\`text${outputLabel ? `\n${outputLabel}` : ""}`
+  ].join("\n");
+  const footer = `\n\`\`\`${result.truncated ? isKorean ? "\n_출력 수집 한도에 도달했습니다._" : "\n_Output capture limit reached._" : ""}`;
+  const outputBody = tailForEmbed(escapeCodeFence(output), 4096 - header.length - footer.length);
 
-  for (const chunk of prefixChunks(splitDiscordMessage(content, undefined, config.language))) {
-    await sendThreadMessage(thread, {
-      content: chunk,
-      allowedMentions: { parse: [] }
-    }, discordApiOptions(), { action: "response.chunk", threadId: thread.id });
+  return {
+    title: isKorean ? "서버 셸 명령" : "Server shell command",
+    description: `${header}\n${outputBody}${footer}`,
+    color: shellEmbedColor(result, phase),
+    timestamp: new Date().toISOString()
+  };
+}
+
+function shellExitStatus(result: ShellCommandSnapshot | ShellCommandResult): string {
+  if (result.timedOut) {
+    return "timeout";
   }
+  if ("signal" in result && result.signal) {
+    return `signal ${result.signal}`;
+  }
+  if ("exitCode" in result) {
+    return `exit ${result.exitCode ?? "unknown"}`;
+  }
+  return "running";
+}
+
+function shellEmbedColor(result: ShellCommandSnapshot | ShellCommandResult, phase: "running" | "complete" | "blocked"): number {
+  if (phase === "blocked" || result.timedOut || ("exitCode" in result && result.exitCode !== 0)) {
+    return 0xeb5757;
+  }
+  if (phase === "complete") {
+    return 0x27ae60;
+  }
+  return 0x2f80ed;
+}
+
+function tailForEmbed(value: string, limit: number): string {
+  const safeLimit = Math.max(200, limit);
+  if (value.length <= safeLimit) {
+    return value;
+  }
+  return value.slice(value.length - safeLimit).replace(/^[^\n]*\n?/, "");
+}
+
+function clip(value: string, limit: number): string {
+  return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatCodexResponse, formatStatusEmbed, formatUsageEmbed, splitDiscordMessage, summarizeLongResponse } from "../src/discordFormat";
+import { formatCodexResponse, formatRunFailedEmbed, formatRunStoppedEmbed, formatStatusEmbed, formatUsageEmbed, splitDiscordMessage, summarizeLongResponse } from "../src/discordFormat";
 
 describe("splitDiscordMessage", () => {
   test("returns a friendly empty response", () => {
@@ -44,6 +44,40 @@ describe("splitDiscordMessage", () => {
     expect(embed.fields?.some((field) => field.name === "Progress" && field.value.includes("bun test"))).toBe(true);
     expect(embed.fields?.some((field) => field.name === "Job")).toBe(false);
     expect(embed.fields?.some((field) => field.name === "Timeline")).toBe(false);
+  });
+
+  test("includes live output in status embeds", () => {
+    const embed = formatStatusEmbed({
+      running: true,
+      phase: "responding",
+      queued: 0,
+      output: "hello\nworld"
+    }, "en");
+
+    const outputField = embed.fields?.find((field) => field.name === "Output");
+    expect(outputField?.value).toContain("hello\nworld");
+    expect(outputField?.value.length).toBeLessThanOrEqual(1024);
+  });
+
+  test("keeps long live output within embed field limits", () => {
+    const embed = formatStatusEmbed({
+      running: true,
+      phase: "responding",
+      queued: 0,
+      output: "a".repeat(5000)
+    }, "en");
+
+    const outputField = embed.fields?.find((field) => field.name === "Output");
+    expect(outputField?.value).toContain("latest output");
+    expect(outputField?.value.length).toBeLessThanOrEqual(1024);
+  });
+
+  test("keeps live output on stopped and failed embeds", () => {
+    const stopped = formatRunStoppedEmbed({ elapsedMs: 1000, output: "partial" }, "en");
+    const failed = formatRunFailedEmbed({ elapsedMs: 1000, error: "boom", output: "partial" }, "en");
+
+    expect(stopped.fields?.some((field) => field.name === "Output" && field.value.includes("partial"))).toBe(true);
+    expect(failed.fields?.some((field) => field.name === "Output" && field.value.includes("partial"))).toBe(true);
   });
 
   test("does not add a repeated response title", () => {

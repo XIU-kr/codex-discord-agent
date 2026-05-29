@@ -177,6 +177,7 @@ export function formatRunCompleteEmbed(options: {
   bytes?: number;
   usage?: CodexUsage;
   progress?: string[];
+  output?: string;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
   const fields: DiscordEmbedField[] = [
@@ -193,6 +194,9 @@ export function formatRunCompleteEmbed(options: {
   if (options.progress && options.progress.length > 0) {
     fields.push({ name: messages.labels.progress, value: formatProgress(options.progress) });
   }
+  if (options.output) {
+    fields.push({ name: messages.labels.outputTokens, value: formatLiveOutput(options.output, language) });
+  }
 
   return {
     title: plainTitle(messages.runComplete),
@@ -206,6 +210,7 @@ export function formatRunFailedEmbed(options: {
   elapsedMs: number;
   lastEvent?: string;
   error?: string;
+  output?: string;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
   const fields: DiscordEmbedField[] = [
@@ -218,6 +223,9 @@ export function formatRunFailedEmbed(options: {
   if (options.lastEvent) {
     fields.push({ name: messages.labels.lastEvent, value: code(options.lastEvent) });
   }
+  if (options.output) {
+    fields.push({ name: messages.labels.outputTokens, value: formatLiveOutput(options.output, language) });
+  }
 
   return {
     title: plainTitle(messages.runFailed),
@@ -229,15 +237,20 @@ export function formatRunFailedEmbed(options: {
 
 export function formatRunStoppedEmbed(options: {
   elapsedMs: number;
+  output?: string;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
+  const fields: DiscordEmbedField[] = [
+    { name: messages.labels.elapsed, value: code(formatDuration(options.elapsedMs, language)), inline: true }
+  ];
+  if (options.output) {
+    fields.push({ name: messages.labels.outputTokens, value: formatLiveOutput(options.output, language) });
+  }
   return {
     title: plainTitle(messages.runStopped),
     color: embedColors.neutral,
     timestamp: new Date().toISOString(),
-    fields: [
-      { name: messages.labels.elapsed, value: code(formatDuration(options.elapsedMs, language)), inline: true }
-    ]
+    fields
   };
 }
 
@@ -272,6 +285,7 @@ export function formatStatusEmbed(options: {
   usage?: CodexUsage;
   warning?: string;
   progress?: string[];
+  output?: string;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
   const fields: DiscordEmbedField[] = [
@@ -294,6 +308,9 @@ export function formatStatusEmbed(options: {
   }
   if (options.progress && options.progress.length > 0) {
     fields.push({ name: messages.labels.progress, value: formatProgress(options.progress) });
+  }
+  if (options.output) {
+    fields.push({ name: messages.labels.outputTokens, value: formatLiveOutput(options.output, language) });
   }
   if (options.queueSummary) {
     fields.push({ name: messages.labels.queue, value: options.queueSummary });
@@ -620,6 +637,24 @@ function clip(value: string, limit: number): string {
 
 function formatProgress(progress: string[]): string {
   return progress.slice(-5).map((event) => `- ${clip(event, 180)}`).join("\n");
+}
+
+function formatLiveOutput(output: string, language: BotLanguage): string {
+  const normalized = output.trim();
+  if (!normalized) {
+    return code(t(language).values.none);
+  }
+  const escaped = normalized.replace(/```/g, "'''");
+  const prefix = "```text\n";
+  const suffix = "\n```";
+  const limit = 1024 - prefix.length - suffix.length;
+  if (escaped.length <= limit) {
+    return `${prefix}${escaped}${suffix}`;
+  }
+  const tail = escaped.slice(escaped.length - limit).replace(/^[^\n]*\n?/, "");
+  const marker = language === "ko" ? "(최근 출력)" : "(latest output)";
+  const bodyLimit = limit - marker.length - 1;
+  return `${prefix}${marker}\n${tail.slice(Math.max(0, tail.length - bodyLimit))}${suffix}`;
 }
 
 function escapeMarkdown(value: string): string {

@@ -20,6 +20,7 @@ export interface CodexRunOptions {
   onActivity?: () => void;
   onEvent?: (event: CodexRunEvent) => void;
   onUsage?: (usage: CodexUsage) => void;
+  onResponseSnapshot?: (content: string) => void;
   onMessage?: (content: string) => void | Promise<void>;
 }
 
@@ -132,7 +133,7 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
   const pendingMessageHandlers: Promise<void>[] = [];
   const notifiedMessages = new Set<string>();
   let stopSessionLogWatch: (() => void) | undefined;
-  const sessionLogWatcher = options.sessionId && options.onMessage
+  const sessionLogWatcher = options.sessionId && (options.onMessage || options.onResponseSnapshot)
     ? watchSessionLog(options.sessionId, parseCodexJsonLineAndNotify, options.sessionLogPath)
     : undefined;
   stopSessionLogWatch = sessionLogWatcher?.stop;
@@ -212,8 +213,15 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
   function parseCodexJsonLineAndNotify(line: string): void {
     markActivity();
     const previousMessageCount = parseState.finalMessages.length;
+    const previousDeltaCount = parseState.deltaMessages.length;
     const previousUsageSignature = usageSignature(parseState.usage);
     parseCodexJsonLine(line, parseState);
+    if (parseState.finalMessages.length > previousMessageCount || parseState.deltaMessages.length > previousDeltaCount) {
+      const snapshot = parseState.finalMessages.join("\n\n").trim() || parseState.deltaMessages.join("").trim();
+      if (snapshot) {
+        options.onResponseSnapshot?.(snapshot);
+      }
+    }
     if (usageSignature(parseState.usage) !== previousUsageSignature && parseState.usage) {
       options.onUsage?.(parseState.usage);
     }
