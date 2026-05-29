@@ -246,6 +246,32 @@ codex-discord-agent stop
 
 ## Discord Thread Commands
 
+### Global Thread Profile
+
+Send a normal text message in the configured parent channel to set a global profile for every managed thread. Use it for shared personality, name, tone, and response style.
+
+Examples:
+
+```text
+Your name is Odin. Reply in concise Korean. Be direct, practical, and calm.
+```
+
+The saved profile applies to existing and new threads from the next Codex run. It does not interrupt a job that is already running.
+
+Manage the profile from the parent channel:
+
+```text
+profile
+profile clear
+
+프로필
+프로필 초기화
+```
+
+Attachments in the parent channel are ignored for the global profile.
+
+### Thread Commands
+
 Inside a managed thread:
 
 ```text
