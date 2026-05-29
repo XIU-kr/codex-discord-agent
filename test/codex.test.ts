@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildCodexArgs, parseCodexJsonLine, runCodex, type CodexParseState } from "../src/codex";
+import { buildCodexArgs, parseCodexJsonLine, readSessionLogAppend, runCodex, type CodexParseState } from "../src/codex";
 
 describe("buildCodexArgs", () => {
   test("builds first-run command with selected model and full access", () => {
@@ -232,6 +232,19 @@ describe("parseCodexJsonLine", () => {
 });
 
 describe("runCodex watchdogs", () => {
+  test("reads session log appends by byte offset when logs contain Korean text", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "codex-discord-agent-"));
+    const file = join(dir, "session.jsonl");
+    await writeFile(file, "{\"type\":\"agent_message\",\"message\":\"한글 진행\"}\n", "utf8");
+    const offset = (await stat(file)).size;
+    await appendFile(file, "{\"type\":\"agent_message\",\"message\":\"추가 진행\"}\n", "utf8");
+
+    const append = await readSessionLogAppend(file, offset);
+
+    expect(append.text).toContain("추가 진행");
+    expect(append.offset).toBe((await stat(file)).size);
+  });
+
   test("stops a Codex process that produces no output", async () => {
     const dir = await mkdtemp(join(tmpdir(), "codex-discord-agent-"));
     const bin = join(dir, "silent-codex");

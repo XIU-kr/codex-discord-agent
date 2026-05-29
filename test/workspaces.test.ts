@@ -93,12 +93,14 @@ describe("thread workspaces", () => {
       updatedAt: new Date().toISOString(),
       messageIds: ["message-1"],
       attachmentCount: 1,
-      progress: ["Workspace is ready."]
+      progress: ["Workspace is ready."],
+      recoveryAttempts: 1
     });
 
     expect((await loadJobState(workspace))?.status).toBe("running");
     expect((await loadJobState(workspace))?.prompt).toBe("hello world");
     expect((await loadJobState(workspace))?.messageIds).toEqual(["message-1"]);
+    expect((await loadJobState(workspace))?.recoveryAttempts).toBe(1);
     expect((await markJobInterrupted(workspace))?.status).toBe("interrupted");
     expect((await loadJobState(workspace))?.phase).toBe("interrupted");
   });

@@ -90,6 +90,7 @@ interface QueuedJob {
   recoveredFromJobId?: string;
   initialProgressEvents?: string[];
   persistedPrompt?: string;
+  recoveryAttempts?: number;
 }
 
 interface RunningJob {
@@ -617,6 +618,7 @@ function createRecoveredQueuedJob(stored: StoredJobState, threadId: string): Que
     threadId: stored.threadId ?? threadId,
     recoveredFromJobId: stored.jobId,
     persistedPrompt: stored.prompt,
+    recoveryAttempts: (stored.recoveryAttempts ?? 0) + 1,
     initialProgressEvents: [
       ...(stored.progress ?? []),
       messages.recoveryQueued
@@ -731,7 +733,13 @@ function isRecoverableStoredJob(stored: StoredJobState | undefined): stored is S
   if (stored.status === "running") {
     return true;
   }
-  return stored.status === "interrupted" && stored.error === "The service stopped before this job completed.";
+  if (stored.status === "interrupted" && stored.error === "The service stopped before this job completed.") {
+    return true;
+  }
+  return stored.status === "failed" &&
+    (stored.recoveryAttempts ?? 0) < 1 &&
+    typeof stored.error === "string" &&
+    stored.error.includes("Codex produced no output");
 }
 
 function parseParentProfileCommand(content: string): "show" | "clear" | undefined {
@@ -1811,6 +1819,7 @@ async function persistRunningJob(
     messageIds: running.job.messageIds,
     attachmentCount: running.job.attachmentCount,
     progress: running.progressEvents,
+    recoveryAttempts: running.job.recoveryAttempts,
     usage: running.usage
   });
 }

@@ -44,6 +44,7 @@ export interface StoredJobState {
   messageIds?: string[];
   attachmentCount?: number;
   progress?: string[];
+  recoveryAttempts?: number;
   usage?: CodexUsage;
 }
 

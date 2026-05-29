@@ -287,13 +287,13 @@ function watchSessionLog(
 
     while (!stopped) {
       await sleep(1_000);
-      const raw = await readFile(filePath, "utf8").catch(() => "");
-      if (raw.length <= offset) {
+      const append = await readSessionLogAppend(filePath, offset);
+      if (!append.text) {
         continue;
       }
 
-      buffer += raw.slice(offset);
-      offset = raw.length;
+      buffer += append.text;
+      offset = append.offset;
 
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() ?? "";
@@ -312,6 +312,20 @@ function watchSessionLog(
       stopped = true;
     },
     done
+  };
+}
+
+export async function readSessionLogAppend(
+  filePath: string,
+  offset: number
+): Promise<{ text: string; offset: number }> {
+  const raw = await readFile(filePath).catch(() => Buffer.alloc(0));
+  if (raw.byteLength <= offset) {
+    return { text: "", offset };
+  }
+  return {
+    text: raw.subarray(offset).toString("utf8"),
+    offset: raw.byteLength
   };
 }
 
