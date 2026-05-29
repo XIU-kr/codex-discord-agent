@@ -3,8 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  clearGlobalProfileState,
+  ensureGuildWorkspace,
   ensureThreadWorkspace,
   getWorkspaceStats,
+  loadGlobalProfileState,
   loadJobState,
   loadPanelState,
   loadSessionId,
@@ -12,6 +15,7 @@ import {
   loadUsageState,
   markJobInterrupted,
   resetSession,
+  saveGlobalProfileState,
   saveJobState,
   savePanelState,
   saveSessionId,
@@ -25,6 +29,28 @@ afterEach(async () => {
 });
 
 describe("thread workspaces", () => {
+  test("persists global profile state per guild", async () => {
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "codex-discord-agent-"));
+    tempDirs.push(baseDir);
+
+    const guildWorkspace = await ensureGuildWorkspace(baseDir, "guild");
+    expect(await loadGlobalProfileState(guildWorkspace)).toBeUndefined();
+
+    await saveGlobalProfileState(guildWorkspace, {
+      content: "Name: Helper\nTone: concise",
+      authorId: "user-1",
+      authorName: "User",
+      sourceMessageId: "message-1"
+    });
+
+    const loaded = await loadGlobalProfileState(guildWorkspace);
+    expect(loaded?.content).toContain("Tone: concise");
+    expect(loaded?.authorName).toBe("User");
+
+    await clearGlobalProfileState(guildWorkspace);
+    expect(await loadGlobalProfileState(guildWorkspace)).toBeUndefined();
+  });
+
   test("creates stable workspace paths and persists session ids", async () => {
     const baseDir = await mkdtemp(path.join(os.tmpdir(), "codex-discord-agent-"));
     tempDirs.push(baseDir);

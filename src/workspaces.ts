@@ -12,6 +12,12 @@ export interface ThreadWorkspace {
   attachmentsDir: string;
 }
 
+export interface GuildWorkspace {
+  dir: string;
+  stateDir: string;
+  globalProfileFile: string;
+}
+
 export interface SessionState {
   sessionId?: string;
   sessionLogPath?: string;
@@ -38,12 +44,33 @@ export interface PanelState {
   updatedAt: string;
 }
 
+export interface GlobalProfileState {
+  content: string;
+  updatedAt: string;
+  authorId: string;
+  authorName: string;
+  sourceMessageId: string;
+}
+
 const stateDirName = ".codex-discord-agent";
 const sessionFileName = "session.json";
 const jobStateFileName = "last-job.json";
 const panelStateFileName = "panel.json";
 const usageStateFileName = "usage.json";
+const globalProfileFileName = "global-profile.json";
 const attachmentsDirName = "attachments";
+
+export async function ensureGuildWorkspace(baseDir: string, guildId: string): Promise<GuildWorkspace> {
+  const dir = path.join(baseDir, guildId);
+  const stateDir = path.join(dir, stateDirName);
+  await mkdir(stateDir, { recursive: true });
+
+  return {
+    dir,
+    stateDir,
+    globalProfileFile: path.join(stateDir, globalProfileFileName)
+  };
+}
 
 export async function ensureThreadWorkspace(
   baseDir: string,
@@ -65,6 +92,45 @@ export async function ensureThreadWorkspace(
     stateDir,
     attachmentsDir
   };
+}
+
+export async function loadGlobalProfileState(guildWorkspace: GuildWorkspace): Promise<GlobalProfileState | undefined> {
+  try {
+    const raw = await readFile(guildWorkspace.globalProfileFile, "utf8");
+    const state = JSON.parse(raw) as GlobalProfileState;
+    if (typeof state.content !== "string" || state.content.trim().length === 0) {
+      return undefined;
+    }
+    return {
+      content: state.content,
+      updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : new Date(0).toISOString(),
+      authorId: typeof state.authorId === "string" ? state.authorId : "unknown",
+      authorName: typeof state.authorName === "string" ? state.authorName : "unknown",
+      sourceMessageId: typeof state.sourceMessageId === "string" ? state.sourceMessageId : "unknown"
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+export async function saveGlobalProfileState(
+  guildWorkspace: GuildWorkspace,
+  state: Omit<GlobalProfileState, "updatedAt"> & { updatedAt?: string }
+): Promise<GlobalProfileState> {
+  const saved: GlobalProfileState = {
+    ...state,
+    content: state.content.trim(),
+    updatedAt: state.updatedAt ?? new Date().toISOString()
+  };
+  await writeFile(guildWorkspace.globalProfileFile, `${JSON.stringify(saved, null, 2)}\n`, "utf8");
+  return saved;
+}
+
+export async function clearGlobalProfileState(guildWorkspace: GuildWorkspace): Promise<void> {
+  await rm(guildWorkspace.globalProfileFile, { force: true });
 }
 
 export async function loadSessionState(workspace: ThreadWorkspace): Promise<SessionState | undefined> {
