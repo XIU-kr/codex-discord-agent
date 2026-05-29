@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -68,8 +68,7 @@ async function* walkJsonlFiles(dir: string): AsyncGenerator<string> {
 }
 
 async function readSessionMeta(filePath: string): Promise<CodexSessionMeta | undefined> {
-  const raw = await readFile(filePath, "utf8");
-  const firstLine = raw.split(/\r?\n/, 1)[0]?.trim();
+  const firstLine = await readFirstLine(filePath);
   if (!firstLine) {
     return undefined;
   }
@@ -99,6 +98,32 @@ async function readSessionMeta(filePath: string): Promise<CodexSessionMeta | und
     : (await stat(filePath)).mtimeMs;
 
   return { id, cwd, timestampMs };
+}
+
+async function readFirstLine(filePath: string): Promise<string | undefined> {
+  const file = await open(filePath, "r");
+  try {
+    let offset = 0;
+    let buffered = "";
+    const buffer = Buffer.alloc(4096);
+
+    while (offset < 1024 * 1024) {
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
+      if (bytesRead === 0) {
+        break;
+      }
+      buffered += buffer.subarray(0, bytesRead).toString("utf8");
+      const lineEnd = buffered.search(/\r?\n/);
+      if (lineEnd >= 0) {
+        return buffered.slice(0, lineEnd).trim();
+      }
+      offset += bytesRead;
+    }
+
+    return buffered.trim() || undefined;
+  } finally {
+    await file.close();
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

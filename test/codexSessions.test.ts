@@ -56,6 +56,33 @@ describe("findLatestCodexSessionIdForWorkspace", () => {
     await expect(findCodexSessionLogPath("target-session", path.join(root, "codex-home")))
       .resolves.toBe(sessionPath);
   });
+
+  test("reads metadata from large session logs without loading the whole file", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-sessions-"));
+    tempDirs.push(root);
+
+    const sessionDir = path.join(root, "codex-home", "sessions", "2026", "05", "27");
+    await mkdir(sessionDir, { recursive: true });
+    const sessionPath = path.join(sessionDir, "large.jsonl");
+    await writeFile(
+      sessionPath,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: "large-session",
+            cwd: path.join(root, "workspace"),
+            timestamp: "2026-05-27T02:00:00.000Z"
+          }
+        }),
+        "x".repeat(2 * 1024 * 1024)
+      ].join("\n"),
+      "utf8"
+    );
+
+    await expect(findCodexSessionLogPath("large-session", path.join(root, "codex-home")))
+      .resolves.toBe(sessionPath);
+  });
 });
 
 async function writeSessionFile(
