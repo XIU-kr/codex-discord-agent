@@ -303,6 +303,27 @@ export function formatStatusEmbed(options: {
       inline: true
     });
   }
+  if (typeof options.idleMs === "number") {
+    fields.push({
+      name: messages.labels.idle,
+      value: code(formatDuration(options.idleMs, language)),
+      inline: true
+    });
+  }
+  if (typeof options.runTimeoutAt === "number") {
+    fields.push({
+      name: messages.labels.runLimit,
+      value: code(formatTimeUntil(options.runTimeoutAt, language)),
+      inline: true
+    });
+  }
+  if (typeof options.idleTimeoutAt === "number") {
+    fields.push({
+      name: messages.labels.idleLimit,
+      value: code(formatTimeUntil(options.idleTimeoutAt, language)),
+      inline: true
+    });
+  }
   if (options.lastEvent) {
     fields.push({ name: messages.labels.lastEvent, value: code(options.lastEvent) });
   }
@@ -550,6 +571,16 @@ export function formatDuration(ms: number, language: BotLanguage = "en"): string
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = seconds % 60;
   return `${minutes}m ${remainingSeconds}s`;
+}
+
+function formatTimeUntil(timestampMs: number, language: BotLanguage): string {
+  const remaining = timestampMs - Date.now();
+  if (remaining <= 0) {
+    return language === "ko" ? "곧" : "now";
+  }
+  return language === "ko"
+    ? `${formatDuration(remaining, language)} 후`
+    : `in ${formatDuration(remaining, language)}`;
 }
 
 function formatNumber(value: number): string {

@@ -58,7 +58,9 @@ import {
   ensureGuildWorkspace,
   ensureThreadWorkspace,
   getWorkspaceStats,
+  listStoredThreadJobStates,
   loadGlobalProfileState,
+  loadJobState,
   loadPanelState,
   loadSessionState,
   loadUsageState,
@@ -70,6 +72,7 @@ import {
   saveSessionId,
   saveUsageState,
   type GlobalProfileState,
+  type StoredJobState,
   type ThreadWorkspace
 } from "./workspaces";
 
@@ -84,6 +87,9 @@ interface QueuedJob {
   messageIds: string[];
   attachmentCount: number;
   threadId: string;
+  recoveredFromJobId?: string;
+  initialProgressEvents?: string[];
+  persistedPrompt?: string;
 }
 
 interface RunningJob {
@@ -260,6 +266,9 @@ client.once(Events.ClientReady, (readyClient) => {
   }
   void registerSlashCommands(readyClient).catch((error) => {
     console.error("Failed to register Discord slash commands", error);
+  });
+  void recoverRunningJobs(readyClient).catch((error) => {
+    console.error("Failed to recover running Codex jobs", error);
   });
 });
 
@@ -587,6 +596,34 @@ function createQueuedJobFromInteraction(
   };
 }
 
+function createRecoveredQueuedJob(stored: StoredJobState, threadId: string): QueuedJob | undefined {
+  const startedAt = Date.parse(stored.startedAt);
+  const createdAt = stored.createdAt ? Date.parse(stored.createdAt) : Number.NaN;
+  const prompt = buildRecoveredPrompt(stored);
+  if (!prompt) {
+    return undefined;
+  }
+
+  return {
+    id: stored.jobId,
+    messages: [],
+    prompt,
+    promptSummary: stored.promptSummary || summarizePrompt(prompt),
+    authorId: stored.authorId ?? "unknown",
+    authorName: stored.authorName ?? "unknown",
+    createdAt: Number.isFinite(createdAt) ? createdAt : Number.isFinite(startedAt) ? startedAt : Date.now(),
+    messageIds: stored.messageIds ?? [],
+    attachmentCount: stored.attachmentCount ?? 0,
+    threadId: stored.threadId ?? threadId,
+    recoveredFromJobId: stored.jobId,
+    persistedPrompt: stored.prompt,
+    initialProgressEvents: [
+      ...(stored.progress ?? []),
+      messages.recoveryQueued
+    ]
+  };
+}
+
 function createJobId(): string {
   return `job-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
@@ -612,9 +649,89 @@ function formatInterruptPrompt(previousJob: QueuedJob, nextJob: QueuedJob): stri
   ].join("\n");
 }
 
+function buildRecoveredPrompt(stored: StoredJobState): string | undefined {
+  const originalPrompt = stored.prompt?.trim();
+  if (!originalPrompt && !stored.promptSummary && !stored.jobId) {
+    return undefined;
+  }
+
+  return [
+    "The Discord bot or service restarted while this Codex job was running.",
+    "Resume naturally in the existing Codex session and current repository state.",
+    "Do not repeat completed work unless verification shows it is needed.",
+    "Continue the remaining work, keep commits scoped, and report progress clearly in Discord.",
+    "",
+    "Recovered job context:",
+    `Job id: ${stored.jobId}`,
+    `Previous phase: ${stored.phase}`,
+    `Started: ${stored.startedAt}`,
+    `Last update: ${stored.updatedAt}`,
+    `Author: ${stored.authorName ?? "unknown"} (${stored.authorId ?? "unknown"})`,
+    `Messages: ${(stored.messageIds ?? []).join(", ") || "unknown"}`,
+    `Attachments: ${stored.attachmentCount ?? 0}`,
+    "",
+    originalPrompt
+      ? `Original user request:\n${originalPrompt}`
+      : `Original user request summary:\n${stored.promptSummary}`,
+    "",
+    "If the original request is already present in the resumed session, use that context as the source of truth."
+  ].join("\n");
+}
+
 async function fetchThreadChannel(threadId: string): Promise<ThreadChannel | undefined> {
   const channel = await client.channels.fetch(threadId).catch(() => null);
   return channel?.isThread() ? channel : undefined;
+}
+
+async function recoverRunningJobs(readyClient: Client<true>): Promise<void> {
+  const storedJobs = await listStoredThreadJobStates(config.baseWorkspaceDir, config.discordGuildId);
+  let recovered = 0;
+  for (const storedJob of storedJobs) {
+    if (!isRecoverableStoredJob(storedJob.state)) {
+      continue;
+    }
+    const channel = await readyClient.channels.fetch(storedJob.threadId).catch(() => null);
+    if (!channel?.isThread() || !isManagedThread(channel)) {
+      continue;
+    }
+    if (await recoverStoredJob(channel, storedJob.state, "startup")) {
+      recovered += 1;
+    }
+  }
+  if (recovered > 0) {
+    console.log(`Recovered ${recovered} running Codex job(s) after startup.`);
+  }
+}
+
+async function recoverStoredJob(
+  thread: ThreadChannel,
+  stored: StoredJobState,
+  source: "startup" | "thread-activity"
+): Promise<boolean> {
+  const state = getThreadState(thread.id);
+  if (state.running || state.queue.some((job) => job.recoveredFromJobId === stored.jobId || job.id === stored.jobId)) {
+    return false;
+  }
+
+  const recoveredJob = createRecoveredQueuedJob(stored, thread.id);
+  if (!recoveredJob) {
+    return false;
+  }
+
+  console.log(`Recovering Codex job ${stored.jobId} for thread ${thread.id} from ${source}.`);
+  enqueueThreadJob(thread.id, recoveredJob);
+  await ensureControlPanel(thread, threadStates.get(thread.id));
+  return true;
+}
+
+function isRecoverableStoredJob(stored: StoredJobState | undefined): stored is StoredJobState {
+  if (!stored) {
+    return false;
+  }
+  if (stored.status === "running") {
+    return true;
+  }
+  return stored.status === "interrupted" && stored.error === "The service stopped before this job completed.";
 }
 
 function parseParentProfileCommand(content: string): "show" | "clear" | undefined {
@@ -743,11 +860,11 @@ async function processNextJob(threadId: string): Promise<void> {
     startedAt: Date.now(),
     lastActivityAt: Date.now(),
     phase: "preparing",
-    lastEvent: "Job accepted.",
+    lastEvent: job.recoveredFromJobId ? messages.recoveryStarted : "Job accepted.",
     timeoutAt: config.codexRunTimeoutMs ? Date.now() + config.codexRunTimeoutMs : undefined,
     idleDeadlineAt: config.codexIdleTimeoutMs ? Date.now() + config.codexIdleTimeoutMs : undefined,
     abortController,
-    progressEvents: ["Job accepted."],
+    progressEvents: [...(job.initialProgressEvents ?? []), job.recoveredFromJobId ? messages.recoveryStarted : "Job accepted."],
     job
   };
 
@@ -1199,6 +1316,10 @@ async function notifyInterruptedIfAny(thread: ThreadChannel): Promise<void> {
     return;
   }
   const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
+  const stored = await loadJobState(workspace);
+  if (isRecoverableStoredJob(stored) && await recoverStoredJob(thread, stored, "thread-activity")) {
+    return;
+  }
   const interrupted = await markJobInterrupted(workspace);
   if (interrupted?.status !== "interrupted") {
     return;
@@ -1619,21 +1740,23 @@ function buildStatusEmbed(state: ThreadState, runningFlag: boolean) {
 }
 
 function buildCodexLiveOutput(running: RunningJob): string | undefined {
+  const toolLabel = config.language === "ko" ? "도구 실행" : "Tool output";
+  const assistantLabel = config.language === "ko" ? "응답 초안" : "Assistant";
   const sections = [
-    running.codexTranscript ? `Tool output\n${running.codexTranscript}` : "",
-    running.codexResponse ? `Assistant\n${running.codexResponse}` : ""
+    running.codexTranscript ? `${toolLabel}\n${running.codexTranscript}` : "",
+    running.codexResponse ? `${assistantLabel}\n${running.codexResponse}` : ""
   ].filter(Boolean);
   return sections.length > 0 ? sections.join("\n\n") : undefined;
 }
 
 async function buildIdleStatusEmbed(thread: ThreadChannel, state: ThreadState | undefined) {
   const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
-  const lastJob = await markJobInterrupted(workspace);
+  const lastJob = await loadJobState(workspace);
   return formatStatusEmbed({
     running: false,
     jobId: lastJob?.jobId,
     phase: lastJob?.status,
-    lastEvent: lastJob?.status === "interrupted" ? messages.interruptedHint : lastJob?.error,
+    lastEvent: lastJob?.status === "running" ? messages.recoveryQueued : lastJob?.status === "interrupted" ? messages.interruptedHint : lastJob?.error,
     queued: state?.queue.length ?? 0,
     queueSummary: formatQueueSummary(state?.queue ?? []),
     warning: buildOperationalWarning()
@@ -1675,11 +1798,19 @@ async function persistRunningJob(
     status,
     phase,
     promptSummary: running.job.promptSummary,
+    prompt: running.job.persistedPrompt ?? running.job.prompt,
+    threadId: running.job.threadId,
+    authorId: running.job.authorId,
+    authorName: running.job.authorName,
+    createdAt: new Date(running.job.createdAt).toISOString(),
     startedAt: new Date(running.startedAt).toISOString(),
     updatedAt: new Date().toISOString(),
     endedAt: status === "running" ? undefined : new Date().toISOString(),
     error: status === "failed" ? lastEvent : undefined,
     queued: state.queue.length,
+    messageIds: running.job.messageIds,
+    attachmentCount: running.job.attachmentCount,
+    progress: running.progressEvents,
     usage: running.usage
   });
 }

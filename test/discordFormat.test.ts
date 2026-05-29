@@ -32,6 +32,8 @@ describe("splitDiscordMessage", () => {
       phase: "tool",
       lastEvent: "Tool activity: test",
       timeoutAt: Date.now() + 10_000,
+      runTimeoutAt: Date.now() + 60_000,
+      idleTimeoutAt: Date.now() + 30_000,
       elapsedMs: 1_000,
       idleMs: 500,
       queued: 2,
@@ -41,6 +43,8 @@ describe("splitDiscordMessage", () => {
 
     expect(embed.fields?.some((field) => field.name === "Phase" && field.value.includes("Using tools"))).toBe(true);
     expect(embed.fields?.some((field) => field.name === "Last event")).toBe(true);
+    expect(embed.fields?.some((field) => field.name === "Run limit" && field.value.includes("in"))).toBe(true);
+    expect(embed.fields?.some((field) => field.name === "Idle limit" && field.value.includes("in"))).toBe(true);
     expect(embed.fields?.some((field) => field.name === "Progress" && field.value.includes("bun test"))).toBe(true);
     expect(embed.fields?.some((field) => field.name === "Job")).toBe(false);
     expect(embed.fields?.some((field) => field.name === "Timeline")).toBe(false);

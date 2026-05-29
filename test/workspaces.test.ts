@@ -7,6 +7,7 @@ import {
   ensureGuildWorkspace,
   ensureThreadWorkspace,
   getWorkspaceStats,
+  listStoredThreadJobStates,
   loadGlobalProfileState,
   loadJobState,
   loadPanelState,
@@ -83,13 +84,46 @@ describe("thread workspaces", () => {
       status: "running",
       phase: "codex",
       promptSummary: "hello",
+      prompt: "hello world",
+      threadId: "thread",
+      authorId: "user-1",
+      authorName: "User",
+      createdAt: new Date().toISOString(),
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      messageIds: ["message-1"],
+      attachmentCount: 1,
+      progress: ["Workspace is ready."]
+    });
+
+    expect((await loadJobState(workspace))?.status).toBe("running");
+    expect((await loadJobState(workspace))?.prompt).toBe("hello world");
+    expect((await loadJobState(workspace))?.messageIds).toEqual(["message-1"]);
+    expect((await markJobInterrupted(workspace))?.status).toBe("interrupted");
+    expect((await loadJobState(workspace))?.phase).toBe("interrupted");
+  });
+
+  test("lists stored thread job states for recovery", async () => {
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "codex-discord-agent-"));
+    tempDirs.push(baseDir);
+
+    const workspace = await ensureThreadWorkspace(baseDir, "guild", "thread-a");
+    await saveJobState(workspace, {
+      jobId: "job-1",
+      status: "running",
+      phase: "codex",
+      promptSummary: "resume me",
+      prompt: "continue the work",
+      threadId: "thread-a",
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
 
-    expect((await loadJobState(workspace))?.status).toBe("running");
-    expect((await markJobInterrupted(workspace))?.status).toBe("interrupted");
-    expect((await loadJobState(workspace))?.phase).toBe("interrupted");
+    const jobs = await listStoredThreadJobStates(baseDir, "guild");
+
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.threadId).toBe("thread-a");
+    expect(jobs[0]?.state.prompt).toBe("continue the work");
   });
 
   test("persists control panel message ids", async () => {

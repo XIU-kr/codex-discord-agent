@@ -31,12 +31,26 @@ export interface StoredJobState {
   status: StoredJobStatus;
   phase: string;
   promptSummary: string;
+  prompt?: string;
+  threadId?: string;
+  authorId?: string;
+  authorName?: string;
+  createdAt?: string;
   startedAt: string;
   updatedAt: string;
   endedAt?: string;
   error?: string;
   queued?: number;
+  messageIds?: string[];
+  attachmentCount?: number;
+  progress?: string[];
   usage?: CodexUsage;
+}
+
+export interface StoredThreadJobState {
+  threadId: string;
+  workspace: ThreadWorkspace;
+  state: StoredJobState;
 }
 
 export interface PanelState {
@@ -188,6 +202,35 @@ export async function loadJobState(workspace: ThreadWorkspace): Promise<StoredJo
 
 export async function saveJobState(workspace: ThreadWorkspace, state: StoredJobState): Promise<void> {
   await writeFile(workspace.jobStateFile, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
+export async function listStoredThreadJobStates(
+  baseDir: string,
+  guildId: string
+): Promise<StoredThreadJobState[]> {
+  const guildDir = path.join(baseDir, guildId);
+  let entries;
+  try {
+    entries = await readdir(guildDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+
+  const jobs: StoredThreadJobState[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === stateDirName) {
+      continue;
+    }
+    const workspace = await ensureThreadWorkspace(baseDir, guildId, entry.name);
+    const state = await loadJobState(workspace);
+    if (state) {
+      jobs.push({ threadId: entry.name, workspace, state });
+    }
+  }
+  return jobs;
 }
 
 export async function loadPanelState(workspace: ThreadWorkspace): Promise<PanelState | undefined> {
