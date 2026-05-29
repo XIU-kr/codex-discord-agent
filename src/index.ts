@@ -20,6 +20,11 @@ import {
 import { saveDiscordAttachments, formatAttachmentPrompt, type AttachmentSaveResult } from "./attachments";
 import { runCodex, type CodexUsage } from "./codex";
 import { findLatestCodexSessionIdForWorkspace } from "./codexSessions";
+import {
+  buildCodexSlashPrompt,
+  codexDiscordCommandAliases,
+  codexDiscordCommandFromAlias
+} from "./codexDiscordCommands";
 import { loadConfig } from "./config";
 import { runDoctor } from "./doctor";
 import {
@@ -78,6 +83,7 @@ interface QueuedJob {
   createdAt: number;
   messageIds: string[];
   attachmentCount: number;
+  threadId: string;
 }
 
 interface RunningJob {
@@ -206,6 +212,36 @@ const slashCommandAliases: Array<{ name: string; description: { en: string; ko: 
   { name: "shell", description: slashCommandDescriptions.shell },
   { name: "터미널", description: slashCommandDescriptions.shell }
 ];
+const genericCodexCommandAliases: Array<{ name: string; description: { en: string; ko: string } }> = [
+  {
+    name: "codex",
+    description: {
+      en: "Send any Codex slash command.",
+      ko: "임의의 Codex slash 명령을 실행합니다."
+    }
+  },
+  {
+    name: "코덱스",
+    description: {
+      en: "Send any Codex slash command.",
+      ko: "임의의 Codex slash 명령을 실행합니다."
+    }
+  },
+  {
+    name: "codexcmd",
+    description: {
+      en: "Send any Codex slash command.",
+      ko: "임의의 Codex slash 명령을 실행합니다."
+    }
+  },
+  {
+    name: "코덱스명령",
+    description: {
+      en: "Send any Codex slash command.",
+      ko: "임의의 Codex slash 명령을 실행합니다."
+    }
+  }
+];
 
 const client = new Client({
   intents: [
@@ -241,18 +277,48 @@ client.on(Events.ThreadCreate, async (thread) => {
 });
 
 async function registerSlashCommands(readyClient: Client<true>): Promise<void> {
-  const commands: ApplicationCommandDataResolvable[] = slashCommandAliases.map((alias) => ({
-    name: alias.name,
-    description: alias.description[config.language],
-    options: commandNameFromAlias(alias.name) === "shell"
-      ? [{
-        name: "command",
-        description: config.language === "ko" ? "실행할 서버 셸 명령" : "Server shell command to run",
+  const commands: ApplicationCommandDataResolvable[] = [
+    ...slashCommandAliases.map((alias) => ({
+      name: alias.name,
+      description: alias.description[config.language],
+      options: commandNameFromAlias(alias.name) === "shell"
+        ? [{
+          name: "command",
+          description: config.language === "ko" ? "실행할 서버 셸 명령" : "Server shell command to run",
+          type: ApplicationCommandOptionType.String as const,
+          required: true
+        }]
+        : []
+    })),
+    ...codexDiscordCommandAliases.map((alias) => ({
+      name: alias.name,
+      description: alias.description[config.language],
+      options: [{
+        name: "args",
+        description: config.language === "ko" ? "Codex 명령에 전달할 추가 인자" : "Additional arguments for the Codex command",
         type: ApplicationCommandOptionType.String as const,
-        required: true
+        required: false
       }]
-      : []
-  }));
+    })),
+    ...genericCodexCommandAliases.map((alias) => ({
+      name: alias.name,
+      description: alias.description[config.language],
+      options: [
+        {
+          name: "command",
+          description: config.language === "ko" ? "실행할 Codex 명령 이름" : "Codex slash command name",
+          type: ApplicationCommandOptionType.String as const,
+          required: true
+        },
+        {
+          name: "args",
+          description: config.language === "ko" ? "Codex 명령에 전달할 추가 인자" : "Additional arguments for the Codex command",
+          type: ApplicationCommandOptionType.String as const,
+          required: false
+        }
+      ]
+    }))
+  ];
   const registered = await readyClient.application.commands.set(commands, config.discordGuildId);
   console.log(`Registered ${registered.size} Discord application command(s) for guild ${config.discordGuildId}`);
 }
@@ -491,7 +557,32 @@ function createQueuedJob(messages: Message[], prompt: string): QueuedJob {
     authorName: latestMessage?.member?.displayName ?? author?.username ?? "unknown",
     createdAt: Date.now(),
     messageIds: messages.map((message) => message.id),
-    attachmentCount: messages.reduce((count, message) => count + message.attachments.size, 0)
+    attachmentCount: messages.reduce((count, message) => count + message.attachments.size, 0),
+    threadId: latestMessage?.channelId ?? "unknown"
+  };
+}
+
+function createQueuedJobFromInteraction(
+  interaction: ChatInputCommandInteraction,
+  prompt: string,
+  threadId: string
+): QueuedJob {
+  const member = interaction.member;
+  const authorName =
+    member && "displayName" in member && typeof member.displayName === "string"
+      ? member.displayName
+      : interaction.user.username;
+  return {
+    id: createJobId(),
+    messages: [],
+    prompt,
+    promptSummary: summarizePrompt(prompt),
+    authorId: interaction.user.id,
+    authorName,
+    createdAt: Date.now(),
+    messageIds: [interaction.id],
+    attachmentCount: 0,
+    threadId
   };
 }
 
@@ -518,6 +609,11 @@ function formatInterruptPrompt(previousJob: QueuedJob, nextJob: QueuedJob): stri
     "New user message:",
     nextJob.prompt.trim() || messages.analyzeAttachments
   ].join("\n");
+}
+
+async function fetchThreadChannel(threadId: string): Promise<ThreadChannel | undefined> {
+  const channel = await client.channels.fetch(threadId).catch(() => null);
+  return channel?.isThread() ? channel : undefined;
 }
 
 function parseParentProfileCommand(content: string): "show" | "clear" | undefined {
@@ -606,6 +702,7 @@ function mergeQueuedJobs(jobs: QueuedJob[]): QueuedJob {
     createdAt: first.createdAt,
     messageIds: jobs.flatMap((job) => job.messageIds),
     attachmentCount: jobs.reduce((count, job) => count + job.attachmentCount, 0),
+    threadId: first.threadId,
     promptSummary: jobs.map((job) => job.promptSummary).join(" / ").slice(0, 120),
     prompt: [
       messages.combinedPromptIntro,
@@ -667,11 +764,11 @@ async function processNextJob(threadId: string): Promise<void> {
 
 async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<void> {
   const latestMessage = job.messages[job.messages.length - 1];
-  if (!latestMessage) {
+  const thread = latestMessage?.channel as ThreadChannel | undefined ?? await fetchThreadChannel(job.threadId);
+  if (!thread) {
     return;
   }
 
-  const thread = latestMessage.channel as ThreadChannel;
   const stopTyping = startTyping(thread);
   const startedAt = Date.now();
   let refreshStatus: ReturnType<typeof setInterval> | undefined;
@@ -1235,14 +1332,53 @@ async function handleChatInputCommandInteraction(
   interaction: ChatInputCommandInteraction,
   thread: ThreadChannel
 ): Promise<void> {
-  if (interaction.commandName !== "codex" && !commandNameFromAlias(interaction.commandName)) {
+  if (
+    interaction.commandName !== "codex" &&
+    !commandNameFromAlias(interaction.commandName) &&
+    !codexDiscordCommandFromAlias(interaction.commandName) &&
+    !genericCodexCommandAliases.some((alias) => alias.name === interaction.commandName)
+  ) {
     return;
   }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const codexPrompt = codexPromptFromInteraction(interaction);
+  if (codexPrompt) {
+    await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
+    await ensureControlPanel(thread, threadStates.get(thread.id));
+    await notifyInterruptedIfAny(thread);
+    await enqueueInteractionPrompt(thread, interaction, codexPrompt);
+    await interaction.editReply(messages.commandHandled);
+    return;
+  }
+
   const command = parseChatInputCommand(interaction);
   await handleThreadCommand(thread, command);
   await interaction.editReply(messages.commandHandled);
+}
+
+async function enqueueInteractionPrompt(
+  thread: ThreadChannel,
+  interaction: ChatInputCommandInteraction,
+  prompt: string
+): Promise<void> {
+  const state = threadStates.get(thread.id);
+  const job = createQueuedJobFromInteraction(interaction, prompt, thread.id);
+  if (state?.running) {
+    job.prompt = formatInterruptPrompt(state.running.job, job);
+    job.promptSummary = summarizePrompt(`${job.promptSummary} (follow-up)`);
+    state.queue.push(job);
+    state.running.interruptRequested = true;
+    await persistRunningJob(state, "interrupted", "New Discord command received; pausing current work to respond.");
+    state.running.abortController.abort();
+    await editRunningStatus(thread, state);
+    return;
+  }
+
+  const enqueueResult = enqueueThreadJob(thread.id, job);
+  if (!enqueueResult.started) {
+    await sendThreadStatus(thread, threadStates.get(thread.id));
+  }
 }
 
 function parseChatInputCommand(interaction: ChatInputCommandInteraction): ThreadCommand {
@@ -1255,6 +1391,19 @@ function parseChatInputCommand(interaction: ChatInputCommandInteraction): Thread
   const commandText = subcommand ?? firstStringOptionValue(interaction.options.data) ?? "help";
 
   return parseThreadCommand(commandText) ?? parseThreadCommand(`/codex ${commandText}`) ?? { name: "help", args: [] };
+}
+
+function codexPromptFromInteraction(interaction: ChatInputCommandInteraction): string | undefined {
+  const directCommand = codexDiscordCommandFromAlias(interaction.commandName);
+  if (directCommand) {
+    return buildCodexSlashPrompt(directCommand.canonical, interaction.options.getString("args") ?? "");
+  }
+  if (genericCodexCommandAliases.some((alias) => alias.name === interaction.commandName)) {
+    const command = interaction.options.getString("command", true);
+    const args = interaction.options.getString("args") ?? "";
+    return buildCodexSlashPrompt(command, args);
+  }
+  return undefined;
 }
 
 function firstStringOptionValue(options: readonly { value?: unknown; options?: readonly { value?: unknown; options?: readonly unknown[] }[] }[]): string | undefined {

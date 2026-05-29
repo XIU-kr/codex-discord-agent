@@ -289,6 +289,9 @@ Inside a managed thread:
 /logs
 /clean
 /shell <command>
+/goal [args]
+/plan [args]
+/codexcmd command:<name> args:<args>
 
 /도움말
 /상태
@@ -302,9 +305,12 @@ Inside a managed thread:
 /로그
 /정리
 /터미널 <명령>
+/목표 [인자]
+/계획 [인자]
+/코덱스명령 command:<이름> args:<인자>
 ```
 
-The bot creates one pinned control panel per managed thread when the thread is created or first used. Each Codex run uses a single status embed that is edited in place as progress events and assistant output arrive, so the thread does not fill with partial response messages. Running status messages keep only the common controls: refresh and stop. Failed jobs show retry. Settings, usage, logs, queue, doctor checks, workspace details, and server shell commands are available through slash commands. Shell commands require a configured Discord allowlist; if both allowlist variables are empty, `/shell` is disabled.
+The bot creates one pinned control panel per managed thread when the thread is created or first used. Each Codex run uses a single status embed that is edited in place as progress events and assistant output arrive, so the thread does not fill with partial response messages. Running status messages keep only the common controls: refresh and stop. Failed jobs show retry. Settings, usage, logs, queue, doctor checks, workspace details, server shell commands, and Codex slash command pass-throughs are available through slash commands. Use direct commands such as `/goal` and `/plan`, their Korean aliases such as `/목표` and `/계획`, or `/codexcmd` / `/코덱스명령` for any Codex slash command not registered directly. Shell commands require a configured Discord allowlist; if both allowlist variables are empty, `/shell` is disabled.
 If the service restarts during a job, the bot marks the last running job as interrupted the next time the thread is used or checked. In-memory queued jobs are not restored after a restart.
 
 ## systemd
