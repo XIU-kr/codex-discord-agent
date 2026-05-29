@@ -179,8 +179,8 @@ describe("parseCodexJsonLine", () => {
             model_context_window: 100
           },
           rate_limits: {
-            primary: { used_percent: 3 },
-            secondary: { used_percent: 5 },
+            primary: { used_percent: 3, reset_at: "2026-05-29T00:00:00.000Z" },
+            secondary: { used_percent: 5, window_seconds: 3600 },
             plan_type: "pro"
           }
         }
@@ -193,6 +193,8 @@ describe("parseCodexJsonLine", () => {
     expect(state.usage?.modelContextWindow).toBe(100);
     expect(state.usage?.rateLimits?.primaryUsedPercent).toBe(3);
     expect(state.usage?.rateLimits?.secondaryUsedPercent).toBe(5);
+    expect(state.usage?.rateLimits?.primaryResetAt).toBe("2026-05-29T00:00:00.000Z");
+    expect(state.usage?.rateLimits?.secondaryWindowMinutes).toBe(60);
     expect(state.usage?.rateLimits?.planType).toBe("pro");
   });
 });
@@ -256,6 +258,6 @@ describe("runCodex watchdogs", () => {
     });
 
     expect(result.content).toBe("done");
-    expect(events.some((event) => event.includes("tool"))).toBe(true);
+    expect(events.some((event) => event.includes("Running tests"))).toBe(true);
   });
 });

@@ -55,6 +55,10 @@ export interface CodexRateLimitUsage {
   secondaryUsedPercent?: number;
   planType?: string;
   rateLimitReachedType?: string;
+  primaryResetAt?: string;
+  secondaryResetAt?: string;
+  primaryWindowMinutes?: number;
+  secondaryWindowMinutes?: number;
 }
 
 export interface CodexUsage {
@@ -228,7 +232,7 @@ export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult
         pendingMessageHandlers.push(withOptionalTimeout(
           Promise.resolve(handlerResult),
           options.messageHandlerTimeoutMs,
-          "Timed out while sending a Codex response to Discord."
+          "Timed out while sending the response to Discord."
         ));
       }
     }
@@ -375,6 +379,7 @@ function summarizeCodexJsonLine(line: string, producedMessage: boolean): CodexRu
 }
 
 function summarizeToolEvent(event: Record<string, unknown>): string {
+  const type = buildType(event).toLowerCase();
   const candidates = [
     event.command,
     event.name,
@@ -382,8 +387,24 @@ function summarizeToolEvent(event: Record<string, unknown>): string {
     isRecord(event.payload) ? event.payload.command : undefined,
     isRecord(event.payload) ? event.payload.name : undefined
   ];
-  const value = candidates.find((candidate) => typeof candidate === "string" && candidate.length > 0);
-  return value ? `Tool activity: ${value}` : "Codex is using a tool.";
+  const value = candidates.find((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);
+  if (value) {
+    const command = value.length > 140 ? `${value.slice(0, 137)}...` : value;
+    if (/\b(test|bun test|npm test|pytest|cargo test|go test)\b/i.test(command)) {
+      return `Running tests: ${command}`;
+    }
+    if (/\b(apply_patch|write|edit|patch)\b/i.test(type) || /\b(apply_patch)\b/i.test(command)) {
+      return `Editing code: ${command}`;
+    }
+    if (/\b(rg|grep|sed|cat|ls|find)\b/i.test(command)) {
+      return `Reading files: ${command}`;
+    }
+    return `Running command: ${command}`;
+  }
+  if (/\b(write|edit|patch)\b/i.test(type)) {
+    return "Editing code.";
+  }
+  return "Using a tool.";
 }
 
 export function buildCodexArgs(options: CodexRunOptions): string[] {
@@ -484,6 +505,10 @@ function usageFromTokenCount(value: Record<string, unknown>): CodexUsage | undef
       ? {
         primaryUsedPercent: parseRateLimitPercent(rateLimits.primary),
         secondaryUsedPercent: parseRateLimitPercent(rateLimits.secondary),
+        primaryResetAt: parseRateLimitReset(rateLimits.primary),
+        secondaryResetAt: parseRateLimitReset(rateLimits.secondary),
+        primaryWindowMinutes: parseRateLimitWindowMinutes(rateLimits.primary),
+        secondaryWindowMinutes: parseRateLimitWindowMinutes(rateLimits.secondary),
         planType: stringValue(rateLimits.plan_type),
         rateLimitReachedType: stringValue(rateLimits.rate_limit_reached_type)
       }
@@ -506,6 +531,44 @@ function parseTokenUsage(value: unknown): CodexTokenUsage | undefined {
 
 function parseRateLimitPercent(value: unknown): number | undefined {
   return isRecord(value) ? numberValue(value.used_percent) : undefined;
+}
+
+function parseRateLimitReset(value: unknown): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  for (const key of ["reset_at", "resets_at", "resetAt", "resetsAt", "next_reset_at", "nextResetAt"]) {
+    const candidate = stringValue(value[key]);
+    if (candidate) {
+      return candidate;
+    }
+  }
+  for (const key of ["reset_seconds", "resets_in_seconds", "reset_after_seconds"]) {
+    const seconds = numberValue(value[key]);
+    if (seconds !== undefined) {
+      return new Date(Date.now() + seconds * 1000).toISOString();
+    }
+  }
+  return undefined;
+}
+
+function parseRateLimitWindowMinutes(value: unknown): number | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  for (const key of ["window_minutes", "windowMinutes"]) {
+    const minutes = numberValue(value[key]);
+    if (minutes !== undefined) {
+      return minutes;
+    }
+  }
+  for (const key of ["window_seconds", "windowSeconds"]) {
+    const seconds = numberValue(value[key]);
+    if (seconds !== undefined) {
+      return Math.round(seconds / 60);
+    }
+  }
+  return undefined;
 }
 
 function numberValue(value: unknown): number | undefined {
