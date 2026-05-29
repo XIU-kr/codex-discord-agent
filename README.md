@@ -200,6 +200,8 @@ Configuration reference:
 - `ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS`: maximum time to wait for each Discord attachment download. Default: `60`. Set `0` to disable.
 - `ATTACHMENT_MAX_FILE_BYTES`: maximum downloaded size for one attachment. Default: `26214400`.
 - `ATTACHMENT_MAX_TOTAL_BYTES`: maximum downloaded size for all attachments in one job. Default: `104857600`.
+- `SHELL_COMMAND_TIMEOUT_SECONDS`: maximum wall-clock time for one Discord shell command. Default: `120`.
+- `SHELL_COMMAND_MAX_OUTPUT_BYTES`: maximum captured output for one Discord shell command. Default: `120000`.
 - `HIDE_WORKSPACE_PATHS`: set to `1` to hide server workspace paths in Discord embeds. Default: `0`.
 - `BOT_LANGUAGE`: `en` or `ko`. Default: `en`.
 - `DISCORD_ALLOWED_USER_IDS`: comma-separated Discord user IDs allowed to run Codex. Empty means no user allowlist.
@@ -286,6 +288,7 @@ Inside a managed thread:
 /stop
 /logs
 /clean
+/shell <command>
 
 /도움말
 /상태
@@ -298,9 +301,10 @@ Inside a managed thread:
 /중단
 /로그
 /정리
+/터미널 <명령>
 ```
 
-The bot creates one pinned control panel per managed thread when the thread is created or first used. Running status messages keep only the common controls: refresh and stop. Failed jobs show retry. Settings, usage, logs, queue, doctor checks, and workspace details are available through slash commands.
+The bot creates one pinned control panel per managed thread when the thread is created or first used. Running status messages keep only the common controls: refresh and stop. Failed jobs show retry. Settings, usage, logs, queue, doctor checks, workspace details, and server shell commands are available through slash commands. Shell commands require a configured Discord allowlist; if both allowlist variables are empty, `/shell` is disabled.
 If the service restarts during a job, the bot marks the last running job as interrupted the next time the thread is used or checked. In-memory queued jobs are not restored after a restart.
 
 ## systemd

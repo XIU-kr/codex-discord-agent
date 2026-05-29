@@ -13,11 +13,13 @@ export type ThreadCommandName =
   | "stop"
   | "stop-current"
   | "logs"
-  | "clean";
+  | "clean"
+  | "shell";
 
 export interface ThreadCommand {
   name: ThreadCommandName;
   args: string[];
+  rawArgs?: string;
 }
 
 const commandAliases: Record<string, ThreadCommandName> = {
@@ -61,17 +63,25 @@ const commandAliases: Record<string, ThreadCommandName> = {
   "로그": "logs",
   clean: "clean",
   cleanup: "clean",
-  "정리": "clean"
+  "정리": "clean",
+  shell: "shell",
+  sh: "shell",
+  terminal: "shell",
+  "터미널": "shell",
+  "쉘": "shell",
+  "명령": "shell"
 };
 
 export function parseThreadCommand(content: string): ThreadCommand | undefined {
   const trimmed = content.trim();
   const codexMatch = trimmed.match(/^(?:\/codex|!codex|codex)(?:\s+(.+))?$/i);
   if (codexMatch) {
-    const parts = (codexMatch[1] ?? "help").trim().split(/\s+/).filter(Boolean);
+    const commandText = (codexMatch[1] ?? "help").trim();
+    const parts = commandText.split(/\s+/).filter(Boolean);
     const requested = (parts.shift() ?? "help").toLowerCase();
     const name = commandAliases[requested];
-    return name ? { name, args: parts } : { name: "help", args: [] };
+    const rawArgs = commandText.slice(requested.length).trimStart();
+    return name ? buildCommand(name, parts, rawArgs) : { name: "help", args: [] };
   }
 
   const directMatch = trimmed.match(/^\/?([\p{L}\p{N}_-]+)(?:\s+(.+))?$/u);
@@ -83,8 +93,9 @@ export function parseThreadCommand(content: string): ThreadCommand | undefined {
   if (!name) {
     return undefined;
   }
-  const parts = (directMatch[2] ?? "").trim().split(/\s+/).filter(Boolean);
-  return { name, args: parts };
+  const rawArgs = (directMatch[2] ?? "").trim();
+  const parts = rawArgs.split(/\s+/).filter(Boolean);
+  return buildCommand(name, parts, rawArgs);
 }
 
 export function commandNameFromAlias(value: string): ThreadCommandName | undefined {
@@ -93,4 +104,8 @@ export function commandNameFromAlias(value: string): ThreadCommandName | undefin
 
 export function formatCommandHelp(language: BotLanguage = "en"): string {
   return t(language).commandHelp.join("\n");
+}
+
+function buildCommand(name: ThreadCommandName, args: string[], rawArgs: string): ThreadCommand {
+  return rawArgs ? { name, args, rawArgs } : { name, args };
 }

@@ -17,6 +17,8 @@ export interface AppConfig {
   attachmentDownloadTimeoutMs?: number;
   attachmentMaxFileBytes: number;
   attachmentMaxTotalBytes: number;
+  shellCommandTimeoutMs: number;
+  shellCommandMaxOutputBytes: number;
   hideWorkspacePaths: boolean;
   allowedUserIds: string[];
   allowedRoleIds: string[];
@@ -86,6 +88,8 @@ export function loadConfig(): AppConfig {
     attachmentDownloadTimeoutMs: optionalSecondsEnv("ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS", 60),
     attachmentMaxFileBytes: optionalNumberEnv("ATTACHMENT_MAX_FILE_BYTES", 25 * 1024 * 1024),
     attachmentMaxTotalBytes: optionalNumberEnv("ATTACHMENT_MAX_TOTAL_BYTES", 100 * 1024 * 1024),
+    shellCommandTimeoutMs: optionalSecondsEnv("SHELL_COMMAND_TIMEOUT_SECONDS", 120) ?? 120_000,
+    shellCommandMaxOutputBytes: optionalNumberEnv("SHELL_COMMAND_MAX_OUTPUT_BYTES", 120_000),
     hideWorkspacePaths: optionalBooleanEnv("HIDE_WORKSPACE_PATHS", false),
     allowedUserIds: optionalListEnv("DISCORD_ALLOWED_USER_IDS"),
     allowedRoleIds: optionalListEnv("DISCORD_ALLOWED_ROLE_IDS"),

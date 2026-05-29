@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   ActionRowBuilder,
+  ApplicationCommandOptionType,
   AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -11,6 +12,7 @@ import {
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   GatewayIntentBits,
+  type ApplicationCommandDataResolvable,
   type Message,
   MessageFlags,
   StringSelectMenuBuilder,
@@ -49,6 +51,7 @@ import {
 } from "./discordFormat";
 import { t } from "./i18n";
 import { buildCodexPrompt } from "./prompts";
+import { runShellCommand, type ShellCommandResult } from "./shellCommands";
 import { isStatusQuestion } from "./statusQuestions";
 import { commandNameFromAlias, formatCommandHelp, parseThreadCommand, type ThreadCommand, type ThreadCommandName } from "./threadCommands";
 import {
@@ -177,6 +180,10 @@ const slashCommandDescriptions: Record<ThreadCommandName, { en: string; ko: stri
   clean: {
     en: "Remove stale workspaces.",
     ko: "오래된 작업 공간을 정리합니다."
+  },
+  shell: {
+    en: "Run a server shell command.",
+    ko: "서버 셸 명령을 실행합니다."
   }
 };
 const slashCommandAliases: Array<{ name: string; description: { en: string; ko: string } }> = [
@@ -201,7 +208,9 @@ const slashCommandAliases: Array<{ name: string; description: { en: string; ko: 
   { name: "workspace", description: slashCommandDescriptions.workspace },
   { name: "작업공간", description: slashCommandDescriptions.workspace },
   { name: "clean", description: slashCommandDescriptions.clean },
-  { name: "정리", description: slashCommandDescriptions.clean }
+  { name: "정리", description: slashCommandDescriptions.clean },
+  { name: "shell", description: slashCommandDescriptions.shell },
+  { name: "터미널", description: slashCommandDescriptions.shell }
 ];
 
 const client = new Client({
@@ -238,9 +247,17 @@ client.on(Events.ThreadCreate, async (thread) => {
 });
 
 async function registerSlashCommands(readyClient: Client<true>): Promise<void> {
-  const commands = slashCommandAliases.map((alias) => ({
+  const commands: ApplicationCommandDataResolvable[] = slashCommandAliases.map((alias) => ({
     name: alias.name,
-    description: alias.description[config.language]
+    description: alias.description[config.language],
+    options: commandNameFromAlias(alias.name) === "shell"
+      ? [{
+        name: "command",
+        description: config.language === "ko" ? "실행할 서버 셸 명령" : "Server shell command to run",
+        type: ApplicationCommandOptionType.String as const,
+        required: true
+      }]
+      : []
   }));
   const registered = await readyClient.application.commands.set(commands, config.discordGuildId);
   console.log(`Registered ${registered.size} Discord application command(s) for guild ${config.discordGuildId}`);
@@ -965,7 +982,39 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
       }, discordApiOptions(), { action: "command.clean", threadId: thread.id });
       return;
     }
+    case "shell":
+      await handleShellCommand(thread, command.rawArgs ?? command.args.join(" "), workspace);
+      return;
   }
+}
+
+async function handleShellCommand(thread: ThreadChannel, commandText: string, workspace: ThreadWorkspace): Promise<void> {
+  const command = commandText.trim();
+  if (isAllowlistOpen()) {
+    await sendThreadMessage(thread, {
+      content: shellCommandDeniedMessage(),
+      allowedMentions: { parse: [] }
+    }, discordApiOptions(), { action: "command.shell.denied", threadId: thread.id });
+    return;
+  }
+  if (!command) {
+    await sendThreadMessage(thread, {
+      content: config.language === "ko"
+        ? "사용법: `/터미널 <명령>` 또는 `/shell <command>`"
+        : "Usage: `/shell <command>` or `/terminal <command>`",
+      allowedMentions: { parse: [] }
+    }, discordApiOptions(), { action: "command.shell.usage", threadId: thread.id });
+    return;
+  }
+
+  await sendThreadTyping(thread, discordApiOptions(), { action: "command.shell.typing", threadId: thread.id });
+  const result = await runShellCommand(command, {
+    cwd: process.cwd(),
+    timeoutMs: config.shellCommandTimeoutMs,
+    maxOutputBytes: config.shellCommandMaxOutputBytes,
+    env: process.env
+  });
+  await sendFormatted(thread, formatShellCommandResult(result), workspace.stateDir, "shell-output.md");
 }
 
 async function notifyInterruptedIfAny(thread: ThreadChannel): Promise<void> {
@@ -1127,7 +1176,8 @@ async function handleChatInputCommandInteraction(
 function parseChatInputCommand(interaction: ChatInputCommandInteraction): ThreadCommand {
   const topLevel = commandNameFromAlias(interaction.commandName);
   if (topLevel) {
-    return { name: topLevel, args: [] };
+    const rawArgs = firstStringOptionValue(interaction.options.data);
+    return rawArgs ? { name: topLevel, args: rawArgs.split(/\s+/).filter(Boolean), rawArgs } : { name: topLevel, args: [] };
   }
   const subcommand = interaction.options.getSubcommand(false);
   const commandText = subcommand ?? firstStringOptionValue(interaction.options.data) ?? "help";
@@ -1641,10 +1691,72 @@ function startTyping(thread: ThreadChannel): () => void {
   return () => clearInterval(timer);
 }
 
+function shellCommandDeniedMessage(): string {
+  return config.language === "ko"
+    ? [
+      "**서버 셸 명령 거부됨**",
+      "Discord 허용 목록이 설정되어 있지 않아 셸 명령을 실행하지 않았습니다.",
+      "`DISCORD_ALLOWED_USER_IDS` 또는 `DISCORD_ALLOWED_ROLE_IDS`를 설정하세요."
+    ].join("\n")
+    : [
+      "**Server shell command denied**",
+      "Shell commands are disabled while the Discord allowlist is open.",
+      "Set `DISCORD_ALLOWED_USER_IDS` or `DISCORD_ALLOWED_ROLE_IDS`."
+    ].join("\n");
+}
+
+function formatShellCommandResult(result: ShellCommandResult): string {
+  if (result.blockedReason) {
+    return [
+      config.language === "ko" ? "**서버 셸 명령 차단됨**" : "**Server shell command blocked**",
+      `${config.language === "ko" ? "사유" : "Reason"}: ${result.blockedReason}`,
+      `${config.language === "ko" ? "명령" : "Command"}: \`${inlineCode(result.command)}\``
+    ].join("\n");
+  }
+
+  const status = result.timedOut
+    ? config.language === "ko" ? "timeout" : "timeout"
+    : result.signal
+      ? `signal ${result.signal}`
+      : `exit ${result.exitCode ?? "unknown"}`;
+  const output = result.output.trim() || (config.language === "ko" ? "(출력 없음)" : "(no output)");
+  const truncated = result.truncated
+    ? config.language === "ko"
+      ? "\n\n_출력이 잘렸습니다._"
+      : "\n\n_Output was truncated._"
+    : "";
+
+  return [
+    config.language === "ko" ? "**서버 셸 명령 완료**" : "**Server shell command complete**",
+    `${config.language === "ko" ? "명령" : "Command"}: \`${inlineCode(result.command)}\``,
+    `${config.language === "ko" ? "상태" : "Status"}: \`${status}\``,
+    `${config.language === "ko" ? "시간" : "Duration"}: \`${formatShellDuration(result.durationMs)}\``,
+    "```text",
+    escapeCodeFence(output),
+    `\`\`\`${truncated}`
+  ].join("\n");
+}
+
+function inlineCode(value: string): string {
+  return value.replace(/`/g, "'");
+}
+
+function escapeCodeFence(value: string): string {
+  return value.replace(/```/g, "'''");
+}
+
+function formatShellDuration(ms: number): string {
+  if (ms < 1000) {
+    return `${ms}ms`;
+  }
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
 async function sendFormatted(
   thread: ThreadChannel,
   content: string,
-  fileDir?: string
+  fileDir?: string,
+  fileName = "codex-response.md"
 ): Promise<void> {
   if (fileDir && shouldSendAsFile(content, config.language)) {
     await mkdir(fileDir, { recursive: true });
@@ -1652,7 +1764,7 @@ async function sendFormatted(
     await writeFile(filePath, `${content.trim()}\n`, "utf8");
     await sendThreadMessage(thread, {
       content: summarizeLongResponse(content, config.language),
-      files: [new AttachmentBuilder(filePath, { name: "codex-response.md" })],
+      files: [new AttachmentBuilder(filePath, { name: fileName })],
       allowedMentions: { parse: [] }
     }, discordApiOptions(), { action: "response.file", threadId: thread.id });
     return;
