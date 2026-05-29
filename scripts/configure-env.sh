@@ -86,11 +86,12 @@ escape_env_value() {
 }
 
 require_tty() {
-  if [[ ! -r /dev/tty ]]; then
+  if ! exec 3<>/dev/tty 2>/dev/null; then
     echo "Interactive configuration requires a TTY." >&2
     echo "Create ${ENV_FILE} manually or run this script from an interactive shell." >&2
     exit 1
   fi
+  exec 3>&-
 }
 
 if [[ -f "${ENV_FILE}" && "${FORCE}" != "1" ]]; then
