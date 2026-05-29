@@ -48,21 +48,27 @@ import {
   summarizeLongResponse
 } from "./discordFormat";
 import { t } from "./i18n";
+import { buildCodexPrompt } from "./prompts";
 import { isStatusQuestion } from "./statusQuestions";
 import { commandNameFromAlias, formatCommandHelp, parseThreadCommand, type ThreadCommand, type ThreadCommandName } from "./threadCommands";
 import {
   cleanStaleWorkspaces,
+  clearGlobalProfileState,
+  ensureGuildWorkspace,
   ensureThreadWorkspace,
   getWorkspaceStats,
+  loadGlobalProfileState,
   loadPanelState,
   loadSessionState,
   loadUsageState,
   markJobInterrupted,
   resetSession,
+  saveGlobalProfileState,
   saveJobState,
   savePanelState,
   saveSessionId,
   saveUsageState,
+  type GlobalProfileState,
   type ThreadWorkspace
 } from "./workspaces";
 
@@ -241,6 +247,10 @@ async function registerSlashCommands(readyClient: Client<true>): Promise<void> {
 }
 
 client.on(Events.MessageCreate, async (message) => {
+  if (await handleParentChannelMessage(message)) {
+    return;
+  }
+
   if (!shouldHandleMessage(message)) {
     return;
   }
@@ -342,6 +352,15 @@ function shouldHandleMessage(message: Message): boolean {
   return isManagedThread(message.channel);
 }
 
+function isManagedParentChannelMessage(message: Message): boolean {
+  return (
+    !message.author.bot &&
+    message.guild?.id === config.discordGuildId &&
+    !message.channel.isThread() &&
+    message.channel.id === config.discordParentChannelId
+  );
+}
+
 function isManagedThread(thread: ThreadChannel): boolean {
   return (
     thread.guildId === config.discordGuildId &&
@@ -356,6 +375,64 @@ function isManagedThread(thread: ThreadChannel): boolean {
 
 async function isAllowed(message: Message): Promise<boolean> {
   return isUserAllowed(message.guild, message.author.id, message.member);
+}
+
+async function handleParentChannelMessage(message: Message): Promise<boolean> {
+  if (!isManagedParentChannelMessage(message)) {
+    return false;
+  }
+  if (!(await isAllowed(message))) {
+    await sendParentChannelMessage(message, {
+      content: messages.denied,
+      allowedMentions: { parse: [] }
+    });
+    return true;
+  }
+
+  const content = message.cleanContent.trim();
+  if (!content) {
+    return true;
+  }
+
+  const guildWorkspace = await ensureGuildWorkspace(config.baseWorkspaceDir, message.guildId ?? config.discordGuildId);
+  const command = parseParentProfileCommand(content);
+  if (command === "show") {
+    const profile = await loadGlobalProfileState(guildWorkspace);
+    await sendParentChannelMessage(message, {
+      content: formatGlobalProfilePreview(profile),
+      allowedMentions: { parse: [] }
+    });
+    return true;
+  }
+  if (command === "clear") {
+    await clearGlobalProfileState(guildWorkspace);
+    await sendParentChannelMessage(message, {
+      content: messages.globalProfileCleared,
+      allowedMentions: { parse: [] }
+    });
+    return true;
+  }
+
+  const saved = await saveGlobalProfileState(guildWorkspace, {
+    content,
+    authorId: message.author.id,
+    authorName: message.member?.displayName ?? message.author.username,
+    sourceMessageId: message.id
+  });
+  await sendParentChannelMessage(message, {
+    content: messages.globalProfileSaved(formatProfilePreview(saved.content), saved.authorName, saved.updatedAt),
+    allowedMentions: { parse: [] }
+  });
+  return true;
+}
+
+async function sendParentChannelMessage(
+  message: Message,
+  options: Parameters<ThreadChannel["send"]>[0]
+): Promise<void> {
+  if ("send" in message.channel && typeof message.channel.send === "function") {
+    await message.channel.send(options);
+  }
 }
 
 async function isInteractionAllowed(
@@ -430,6 +507,33 @@ function formatInterruptPrompt(previousJob: QueuedJob, nextJob: QueuedJob): stri
     "New user message:",
     nextJob.prompt.trim() || messages.analyzeAttachments
   ].join("\n");
+}
+
+function parseParentProfileCommand(content: string): "show" | "clear" | undefined {
+  const normalized = content.trim().toLowerCase();
+  if (["profile", "/profile", "프로필", "/프로필"].includes(normalized)) {
+    return "show";
+  }
+  if (["profile clear", "clear profile", "/profile clear", "프로필 초기화", "/프로필 초기화"].includes(normalized)) {
+    return "clear";
+  }
+  return undefined;
+}
+
+function formatGlobalProfilePreview(profile: GlobalProfileState | undefined): string {
+  if (!profile) {
+    return messages.globalProfileEmpty;
+  }
+  return messages.globalProfileCurrent(
+    formatProfilePreview(profile.content),
+    profile.authorName,
+    profile.updatedAt
+  );
+}
+
+function formatProfilePreview(content: string): string {
+  const normalized = content.trim().replace(/\s+/g, " ");
+  return normalized.length > 500 ? `${normalized.slice(0, 497)}...` : normalized;
 }
 
 function getThreadState(threadId: string): ThreadState {
@@ -589,11 +693,13 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     const failedAttachments = attachmentResults.flatMap((result) => result.failed);
     const imagePaths = savedAttachments.filter((attachment) => attachment.isImage).map((attachment) => attachment.path);
     const attachmentPrompt = formatAttachmentPrompt(savedAttachments, failedAttachments, config.language);
-    const prompt = [
-      job.prompt || messages.analyzeAttachments,
+    const globalProfile = await loadGlobalProfileState(await ensureGuildWorkspace(config.baseWorkspaceDir, thread.guildId));
+    const prompt = buildCodexPrompt({
+      userPrompt: job.prompt || messages.analyzeAttachments,
       attachmentPrompt,
-      messages.replyInstruction
-    ].join("\n");
+      replyInstruction: messages.replyInstruction,
+      globalProfile: globalProfile?.content
+    });
 
     const statusMessage = await sendThreadMessage(thread, {
       embeds: [formatRunStartEmbed({
