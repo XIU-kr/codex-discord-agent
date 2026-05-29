@@ -8,7 +8,6 @@ import {
   ChannelType,
   Client,
   Events,
-  ApplicationCommandOptionType,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   GatewayIntentBits,
@@ -50,7 +49,7 @@ import {
 } from "./discordFormat";
 import { t } from "./i18n";
 import { isStatusQuestion } from "./statusQuestions";
-import { formatCommandHelp, parseThreadCommand, type ThreadCommand, type ThreadCommandName } from "./threadCommands";
+import { commandNameFromAlias, formatCommandHelp, parseThreadCommand, type ThreadCommand, type ThreadCommandName } from "./threadCommands";
 import {
   cleanStaleWorkspaces,
   ensureThreadWorkspace,
@@ -90,8 +89,10 @@ interface RunningJob {
   abortController: AbortController;
   statusMessage?: Message;
   stopRequested?: boolean;
+  interruptRequested?: boolean;
   workspace?: ThreadWorkspace;
   usage?: CodexUsage;
+  progressEvents: string[];
   job: QueuedJob;
 }
 
@@ -172,6 +173,30 @@ const slashCommandDescriptions: Record<ThreadCommandName, { en: string; ko: stri
     ko: "오래된 작업 공간을 정리합니다."
   }
 };
+const slashCommandAliases: Array<{ name: string; description: { en: string; ko: string } }> = [
+  { name: "help", description: slashCommandDescriptions.help },
+  { name: "도움말", description: slashCommandDescriptions.help },
+  { name: "status", description: slashCommandDescriptions.status },
+  { name: "상태", description: slashCommandDescriptions.status },
+  { name: "settings", description: slashCommandDescriptions.settings },
+  { name: "설정", description: slashCommandDescriptions.settings },
+  { name: "usage", description: slashCommandDescriptions.usage },
+  { name: "사용량", description: slashCommandDescriptions.usage },
+  { name: "logs", description: slashCommandDescriptions.logs },
+  { name: "로그", description: slashCommandDescriptions.logs },
+  { name: "queue", description: slashCommandDescriptions.queue },
+  { name: "대기열", description: slashCommandDescriptions.queue },
+  { name: "stop", description: slashCommandDescriptions.stop },
+  { name: "중단", description: slashCommandDescriptions.stop },
+  { name: "reset", description: slashCommandDescriptions.reset },
+  { name: "초기화", description: slashCommandDescriptions.reset },
+  { name: "doctor", description: slashCommandDescriptions.doctor },
+  { name: "진단", description: slashCommandDescriptions.doctor },
+  { name: "workspace", description: slashCommandDescriptions.workspace },
+  { name: "작업공간", description: slashCommandDescriptions.workspace },
+  { name: "clean", description: slashCommandDescriptions.clean },
+  { name: "정리", description: slashCommandDescriptions.clean }
+];
 
 const client = new Client({
   intents: [
@@ -207,17 +232,11 @@ client.on(Events.ThreadCreate, async (thread) => {
 });
 
 async function registerSlashCommands(readyClient: Client<true>): Promise<void> {
-  const command = {
-    name: "codex",
-    description: config.language === "ko" ? "Codex 스레드 명령어" : "Codex thread commands",
-    options: (Object.entries(slashCommandDescriptions) as Array<[ThreadCommandName, { en: string; ko: string }]>)
-      .map(([name, description]) => ({
-        type: ApplicationCommandOptionType.Subcommand as const,
-        name,
-        description: description[config.language]
-      }))
-  };
-  const registered = await readyClient.application.commands.set([command], config.discordGuildId);
+  const commands = slashCommandAliases.map((alias) => ({
+    name: alias.name,
+    description: alias.description[config.language]
+  }));
+  const registered = await readyClient.application.commands.set(commands, config.discordGuildId);
   console.log(`Registered ${registered.size} Discord application command(s) for guild ${config.discordGuildId}`);
 }
 
@@ -253,6 +272,18 @@ client.on(Events.MessageCreate, async (message) => {
   const state = threadStates.get(thread.id);
   if (state?.running && isStatusQuestion(prompt)) {
     await sendThreadStatus(thread, state);
+    return;
+  }
+
+  if (state?.running) {
+    const queuedJob = createQueuedJob([message], prompt);
+    queuedJob.prompt = formatInterruptPrompt(state.running.job, queuedJob);
+    queuedJob.promptSummary = summarizePrompt(`${queuedJob.promptSummary} (follow-up)`);
+    state.queue.push(queuedJob);
+    state.running.interruptRequested = true;
+    await persistRunningJob(state, "interrupted", "New Discord message received; pausing current work to respond.");
+    state.running.abortController.abort();
+    await editRunningStatus(thread, state);
     return;
   }
 
@@ -388,6 +419,19 @@ function summarizePrompt(prompt: string): string {
   return normalized.length > 120 ? `${normalized.slice(0, 117)}...` : normalized;
 }
 
+function formatInterruptPrompt(previousJob: QueuedJob, nextJob: QueuedJob): string {
+  return [
+    "A new Discord message arrived while you were working.",
+    "Pause the previous line of work, answer or incorporate this new message, then continue the task from the same session.",
+    "",
+    "Previous task summary:",
+    previousJob.promptSummary,
+    "",
+    "New user message:",
+    nextJob.prompt.trim() || messages.analyzeAttachments
+  ].join("\n");
+}
+
 function getThreadState(threadId: string): ThreadState {
   const existing = threadStates.get(threadId);
   if (existing) {
@@ -490,6 +534,7 @@ async function processNextJob(threadId: string): Promise<void> {
     timeoutAt: config.codexRunTimeoutMs ? Date.now() + config.codexRunTimeoutMs : undefined,
     idleDeadlineAt: config.codexIdleTimeoutMs ? Date.now() + config.codexIdleTimeoutMs : undefined,
     abortController,
+    progressEvents: ["Job accepted."],
     job
   };
 
@@ -558,6 +603,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
         reasoningEffort: settings.reasoningEffort,
         sessionId,
         queued: state.queue.length,
+        progress: state.running?.progressEvents,
         warning: buildOperationalWarning()
       }, config.language)],
       components: runningComponents(),
@@ -566,6 +612,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     if (state.running) {
       state.running.statusMessage = statusMessage;
     }
+    await editRunningStatus(thread, state);
 
     refreshStatus = setInterval(() => {
       const running = state.running;
@@ -586,6 +633,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
 
     let streamedMessages = 0;
     await persistRunningJob(state, "codex", "Codex process started.");
+    await editRunningStatus(thread, state);
     const result = await runCodex({
       codexBin: config.codexBin,
       model: settings.model,
@@ -606,7 +654,8 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
         }
       },
       onEvent: (event) => {
-        void persistRunningJob(state, event.phase, event.summary);
+        void persistRunningJob(state, event.phase, event.summary)
+          .then(() => editRunningStatus(thread, state));
       },
       onUsage: (usage) => {
         if (state.running) {
@@ -618,7 +667,8 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       },
       onMessage: async (content) => {
         streamedMessages += 1;
-        await persistRunningJob(state, "sending", "Sending Codex response to Discord.");
+        await persistRunningJob(state, "sending", "Sending response to Discord.");
+        await editRunningStatus(thread, state);
         await sendFormatted(thread, formatCodexResponse(content, config.language), workspace.stateDir);
       }
     });
@@ -630,7 +680,8 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       await saveUsageState(workspace, result.usage);
     }
     if (streamedMessages === 0) {
-      await persistRunningJob(state, "sending", "Sending final Codex response to Discord.");
+      await persistRunningJob(state, "sending", "Sending final response to Discord.");
+      await editRunningStatus(thread, state);
       await sendFormatted(thread, formatCodexResponse(result.content, config.language), workspace.stateDir);
     }
 
@@ -644,7 +695,8 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
           sessionId: result.sessionId ?? sessionId,
           files: stats.files,
           bytes: stats.bytes,
-          usage: result.usage ?? state.running.usage
+          usage: result.usage ?? state.running.usage,
+          progress: state.running.progressEvents
         }, config.language)],
         components: idleComponents(),
         allowedMentions: { parse: [] }
@@ -652,6 +704,19 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     }
   } catch (error) {
     const running = state.running;
+    if (running?.interruptRequested) {
+      console.log(`Codex run interrupted for new user input in thread ${thread.id}`);
+      await persistRunningJob(state, "interrupted", "Paused for a new Discord message.", "running");
+      if (running.statusMessage) {
+        await editDiscordMessage(running.statusMessage, {
+          embeds: [buildStatusEmbed(state, true)],
+          components: runningComponents(),
+          allowedMentions: { parse: [] }
+        }, discordApiOptions(), { action: "job.interrupted.edit", threadId: thread.id, jobId: running.id, phase: "interrupted" })
+          .catch(() => undefined);
+      }
+      return;
+    }
     if (running?.stopRequested) {
       console.log(`Codex run stopped by user request for thread ${thread.id}`);
       await persistRunningJob(state, "stopped", "Codex job stopped.", "stopped");
@@ -943,7 +1008,7 @@ async function handleChatInputCommandInteraction(
   interaction: ChatInputCommandInteraction,
   thread: ThreadChannel
 ): Promise<void> {
-  if (interaction.commandName !== "codex") {
+  if (interaction.commandName !== "codex" && !commandNameFromAlias(interaction.commandName)) {
     return;
   }
 
@@ -954,6 +1019,10 @@ async function handleChatInputCommandInteraction(
 }
 
 function parseChatInputCommand(interaction: ChatInputCommandInteraction): ThreadCommand {
+  const topLevel = commandNameFromAlias(interaction.commandName);
+  if (topLevel) {
+    return { name: topLevel, args: [] };
+  }
   const subcommand = interaction.options.getSubcommand(false);
   const commandText = subcommand ?? firstStringOptionValue(interaction.options.data) ?? "help";
 
@@ -1044,16 +1113,7 @@ function runningComponents(): ActionRowBuilder<ButtonBuilder>[] {
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId("codex:refresh").setLabel(messages.actions.refresh).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:stop-current").setLabel(messages.actions.stopCurrent).setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId("codex:stop-all").setLabel(messages.actions.stopAll).setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId("codex:workspace").setLabel(messages.actions.workspace).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
-    ),
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("codex:settings").setLabel(messages.actions.settings).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:queue").setLabel(messages.actions.queue).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:usage").setLabel(messages.actions.usage).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:doctor").setLabel(messages.actions.doctor).setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId("codex:stop-current").setLabel(messages.actions.stopCurrent).setStyle(ButtonStyle.Danger)
     )
   ];
 }
@@ -1061,34 +1121,13 @@ function runningComponents(): ActionRowBuilder<ButtonBuilder>[] {
 function failedComponents(): ActionRowBuilder<ButtonBuilder>[] {
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("codex:retry").setLabel(messages.actions.retry).setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("codex:reset-retry").setLabel(messages.actions.resetRetry).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:settings").setLabel(messages.actions.settings).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:queue").setLabel(messages.actions.queue).setStyle(ButtonStyle.Secondary)
-    ),
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("codex:usage").setLabel(messages.actions.usage).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:workspace").setLabel(messages.actions.workspace).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:doctor").setLabel(messages.actions.doctor).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId("codex:retry").setLabel(messages.actions.retry).setStyle(ButtonStyle.Primary)
     )
   ];
 }
 
 function idleComponents(): ActionRowBuilder<ButtonBuilder>[] {
-  return [
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("codex:refresh").setLabel(messages.actions.refresh).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:settings").setLabel(messages.actions.settings).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:queue").setLabel(messages.actions.queue).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:usage").setLabel(messages.actions.usage).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:doctor").setLabel(messages.actions.doctor).setStyle(ButtonStyle.Secondary)
-    ),
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("codex:workspace").setLabel(messages.actions.workspace).setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("codex:logs").setLabel(messages.actions.logs).setStyle(ButtonStyle.Secondary)
-    )
-  ];
+  return [];
 }
 
 function queueComponents(state: ThreadState | undefined): ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] {
@@ -1189,6 +1228,7 @@ function buildStatusEmbed(state: ThreadState, runningFlag: boolean) {
     queued: state.queue.length,
     queueSummary: formatQueueSummary(state.queue),
     usage: running?.usage,
+    progress: running?.progressEvents,
     warning: buildOperationalWarning()
   }, config.language);
 }
@@ -1229,6 +1269,7 @@ async function persistRunningJob(
 
   running.phase = phase;
   running.lastEvent = lastEvent;
+  pushProgressEvent(running, lastEvent);
   running.lastActivityAt = Date.now();
   running.idleDeadlineAt = config.codexIdleTimeoutMs ? Date.now() + config.codexIdleTimeoutMs : undefined;
 
@@ -1248,6 +1289,34 @@ async function persistRunningJob(
     queued: state.queue.length,
     usage: running.usage
   });
+}
+
+function pushProgressEvent(running: RunningJob, event: string): void {
+  const normalized = event.trim().replace(/\s+/g, " ");
+  if (!normalized || running.progressEvents.at(-1) === normalized) {
+    return;
+  }
+  running.progressEvents.push(normalized);
+  if (running.progressEvents.length > 20) {
+    running.progressEvents.splice(0, running.progressEvents.length - 20);
+  }
+}
+
+async function editRunningStatus(thread: ThreadChannel, state: ThreadState): Promise<void> {
+  const running = state.running;
+  if (!running?.statusMessage) {
+    return;
+  }
+  await editDiscordMessage(running.statusMessage, {
+    embeds: [buildStatusEmbed(state, true)],
+    components: runningComponents(),
+    allowedMentions: { parse: [] }
+  }, discordApiOptions(), {
+    action: "job.status.edit",
+    threadId: thread.id,
+    jobId: running.id,
+    phase: running.phase
+  }).catch(() => undefined);
 }
 
 function discordApiOptions() {
@@ -1294,6 +1363,7 @@ async function ensureControlPanel(thread: ThreadChannel, state: ThreadState | un
       lastEvent: state.running.lastEvent,
       queued: state.queue.length,
       queueSummary: formatQueueSummary(state.queue),
+      progress: state.running.progressEvents,
       warning: buildOperationalWarning()
     }, config.language)
     : formatControlPanelEmbed({
