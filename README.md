@@ -7,10 +7,10 @@ Run Codex from Discord threads. Each managed Discord thread gets its own isolate
 - Watches one Discord guild and one parent channel.
 - Creates one workspace per thread: `BASE_WORKSPACE_DIR/<guildId>/<threadId>`.
 - Sends each user message in the thread to Codex.
-- Keeps follow-up messages in the same thread attached to the same Codex session.
-- Shows Discord typing indicators and an editable job status message.
+- Interrupts the running Codex job when a new user message arrives, lets Codex read it, then resumes the work in the same thread session.
+- Shows Discord typing indicators and an editable job status message with recent progress.
 - Supports English and Korean bot messages with `BOT_LANGUAGE=en|ko`.
-- Supports `/codex` thread commands, file attachments, image attachments, cancellation, session reset, and stale workspace cleanup.
+- Supports short Discord commands, Korean aliases, file attachments, image attachments, cancellation, session reset, usage reporting, and stale workspace cleanup.
 - Installs as a systemd service with an optional daily auto-update timer.
 
 ## Requirements
@@ -204,7 +204,7 @@ Configuration reference:
 - `BOT_LANGUAGE`: `en` or `ko`. Default: `en`.
 - `DISCORD_ALLOWED_USER_IDS`: comma-separated Discord user IDs allowed to run Codex. Empty means no user allowlist.
 - `DISCORD_ALLOWED_ROLE_IDS`: comma-separated Discord role IDs allowed to run Codex. Empty means no role allowlist.
-- `STALE_WORKSPACE_DAYS`: age threshold for `/codex clean`.
+- `STALE_WORKSPACE_DAYS`: age threshold for `/clean`.
 
 You can re-run the interactive configuration at any time:
 
@@ -249,22 +249,32 @@ codex-discord-agent stop
 Inside a managed thread:
 
 ```text
-/codex help
-/codex panel
-/codex status
-/codex settings
-/codex queue
-/codex doctor
-/codex usage
-/codex workspace
-/codex reset
-/codex stop
-/codex stop-current
-/codex logs
-/codex clean
+/help
+/status
+/settings
+/queue
+/doctor
+/usage
+/workspace
+/reset
+/stop
+/logs
+/clean
+
+/도움말
+/상태
+/설정
+/대기열
+/진단
+/사용량
+/작업공간
+/초기화
+/중단
+/로그
+/정리
 ```
 
-The bot creates one pinned control panel per managed thread when the thread is created or first used. Status messages also include Discord buttons for refresh, thread settings, queue management, usage, doctor checks, stopping the current job, stopping all queued work, workspace information, logs, and retry actions after failures.
+The bot creates one pinned control panel per managed thread when the thread is created or first used. Running status messages keep only the common controls: refresh and stop. Failed jobs show retry. Settings, usage, logs, queue, doctor checks, and workspace details are available through slash commands.
 If the service restarts during a job, the bot marks the last running job as interrupted the next time the thread is used or checked. In-memory queued jobs are not restored after a restart.
 
 ## systemd
