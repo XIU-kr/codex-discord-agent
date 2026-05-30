@@ -38,10 +38,6 @@ import {
   formatControlPanelMessage,
   formatDoctorMessage,
   formatQueueMessage,
-  formatRunCompleteMessage,
-  formatRunFailedMessage,
-  formatRunStartMessage,
-  formatRunStoppedMessage,
   formatSettingsMessage,
   formatStatusMessage,
   formatUsageMessage,
@@ -285,7 +281,6 @@ client.on(Events.ThreadCreate, async (thread) => {
 
   try {
     await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
-    await ensureControlPanel(thread, threadStates.get(thread.id));
     console.log(`Prepared workspace for thread ${thread.id}`);
   } catch (error) {
     console.error(`Failed to prepare workspace for thread ${thread.id}`, error);
@@ -359,7 +354,6 @@ client.on(Events.MessageCreate, async (message) => {
     }, discordApiOptions(), { action: "message.denied", threadId: thread.id });
     return;
   }
-  await ensureControlPanel(thread, threadStates.get(thread.id));
   await notifyInterruptedIfAny(thread);
 
   const command = parseThreadCommand(prompt);
@@ -404,7 +398,7 @@ client.on(Events.MessageCreate, async (message) => {
   const enqueueResult = enqueueThreadJob(thread.id, createQueuedJob([message], prompt));
 
   if (!enqueueResult.started) {
-    await sendThreadStatus(thread, threadStates.get(thread.id));
+    await sendQueueNotice(thread, enqueueResult.queued);
   }
 });
 
@@ -747,7 +741,6 @@ async function recoverStoredJob(
 
   console.log(`Recovering Codex job ${stored.jobId} for thread ${thread.id} from ${source}.`);
   enqueueThreadJob(thread.id, recoveredJob);
-  await ensureControlPanel(thread, threadStates.get(thread.id));
   return true;
 }
 
@@ -962,22 +955,13 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       globalProfile: globalProfile?.content
     });
 
-    const statusMessage = await sendThreadMessage(thread, {
-      content: renderFormattedMessage(formatRunStartMessage({
-        jobId: job.id,
-        workspaceDir: displayWorkspacePath(thread.id, workspace.dir),
-        model: settings.model,
-        reasoningEffort: settings.reasoningEffort,
-        sessionId,
-        queued: state.queue.length,
-        progress: state.running?.progressEvents,
-        warning: buildOperationalWarning()
-      }, config.language)),
+    const activityMessage = await sendThreadMessage(thread, {
+      content: formatActivityMessage(state),
       components: runningComponents(),
       allowedMentions: { parse: [] }
     }, discordApiOptions(), { action: "job.start", threadId: thread.id, jobId: job.id, phase: "preparing" });
     if (state.running) {
-      state.running.statusMessage = statusMessage;
+      state.running.statusMessage = activityMessage;
     }
     await editRunningStatus(thread, state);
 
@@ -1032,7 +1016,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
         return;
       }
       void editDiscordMessage(running.statusMessage, {
-        content: renderFormattedMessage(buildStatusMessage(state, true)),
+        content: formatActivityMessage(state),
         components: runningComponents(),
         allowedMentions: { parse: [] }
       }, discordApiOptions(), {
@@ -1118,24 +1102,8 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     }
     scheduleTranscriptEdit(true);
 
-    await persistRunningJob(state, "completed", "Codex job completed.", "completed");
-    scheduleLiveStatusEdit(true);
-
-    if (state.running?.statusMessage) {
-      const stats = await getWorkspaceStats(workspace);
-      await editDiscordMessage(state.running.statusMessage, {
-        content: renderFormattedMessage(formatRunCompleteMessage({
-          elapsedMs: Date.now() - startedAt,
-          sessionId: result.sessionId ?? sessionId,
-          files: stats.files,
-          bytes: stats.bytes,
-          usage: result.usage ?? state.running.usage,
-          progress: state.running.progressEvents
-        }, config.language)),
-        components: idleComponents(),
-        allowedMentions: { parse: [] }
-      }, discordApiOptions(), { action: "job.complete.edit", threadId: thread.id, jobId: job.id, phase: "completed" });
-    }
+    await persistRunningJob(state, "completed", "Done.", "completed");
+    await deleteRunningActivityMessage(state);
   } catch (error) {
     const running = state.running;
     if (running?.interruptRequested) {
@@ -1143,7 +1111,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       await persistRunningJob(state, "interrupted", "Paused for a new Discord message.", "running");
       if (running.statusMessage) {
         await editDiscordMessage(running.statusMessage, {
-          content: renderFormattedMessage(buildStatusMessage(state, true)),
+          content: formatActivityMessage(state),
           components: runningComponents(),
           allowedMentions: { parse: [] }
         }, discordApiOptions(), { action: "job.interrupted.edit", threadId: thread.id, jobId: running.id, phase: "interrupted" })
@@ -1156,9 +1124,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       await persistRunningJob(state, "stopped", "Codex job stopped.", "stopped");
       if (running.statusMessage) {
         await editDiscordMessage(running.statusMessage, {
-          content: renderFormattedMessage(formatRunStoppedMessage({
-            elapsedMs: Date.now() - startedAt
-          }, config.language)),
+          content: formatStoppedMessage(Date.now() - startedAt),
           components: idleComponents(),
           allowedMentions: { parse: [] }
         }, discordApiOptions(), { action: "job.stopped.edit", threadId: thread.id, jobId: running.id, phase: "stopped" })
@@ -1172,11 +1138,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     await persistRunningJob(state, "failed", error instanceof Error ? error.message : String(error), "failed");
     if (running?.statusMessage) {
       await editDiscordMessage(running.statusMessage, {
-          content: renderFormattedMessage(formatRunFailedMessage({
-            elapsedMs: Date.now() - startedAt,
-            lastEvent: running.lastEvent,
-            error: error instanceof Error ? error.message : String(error)
-          }, config.language)),
+        content: formatFailureMessage(error, running.lastEvent),
         components: failedComponents(),
         allowedMentions: { parse: [] }
       }, discordApiOptions(), { action: "job.failed.edit", threadId: thread.id, jobId: running.id, phase: "failed" })
@@ -1394,15 +1356,9 @@ async function notifyInterruptedIfAny(thread: ThreadChannel): Promise<void> {
     return;
   }
   await sendThreadMessage(thread, {
-    content: renderFormattedMessage(formatStatusMessage({
-      running: false,
-      jobId: interrupted.jobId,
-      phase: interrupted.phase,
-      lastEvent: messages.interruptedHint,
-      queued: 0,
-      warning: buildOperationalWarning()
-    }, config.language)),
-    components: idleComponents(),
+    content: config.language === "ko"
+      ? "이전에 진행 중이던 작업이 서비스 재시작으로 끊겼습니다. 이어서 다시 메시지를 보내면 새 대화로 처리할게요."
+      : "The previous task was interrupted by a service restart. Send another message and I will continue in a new turn.",
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "job.interrupted.notice", threadId: thread.id, jobId: interrupted.jobId });
 }
@@ -1542,7 +1498,6 @@ async function handleChatInputCommandInteraction(
   const codexPrompt = codexPromptFromInteraction(interaction);
   if (codexPrompt) {
     await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
-    await ensureControlPanel(thread, threadStates.get(thread.id));
     await notifyInterruptedIfAny(thread);
     await enqueueInteractionPrompt(thread, interaction, codexPrompt);
     await interaction.editReply(messages.commandHandled);
@@ -1585,7 +1540,7 @@ async function enqueueInteractionPrompt(
 
   const enqueueResult = enqueueThreadJob(thread.id, job);
   if (!enqueueResult.started) {
-    await sendThreadStatus(thread, threadStates.get(thread.id));
+    await sendQueueNotice(thread, enqueueResult.queued);
   }
 }
 
@@ -1833,6 +1788,16 @@ async function sendCodexResponse(thread: ThreadChannel, response: string, jobId:
   }
 }
 
+async function sendQueueNotice(thread: ThreadChannel, queued: number): Promise<void> {
+  const content = config.language === "ko"
+    ? `대화가 진행 중이라 다음 메시지로 이어서 처리할게요. 대기: \`${queued}\``
+    : `I am already working, so I will handle this next. Queued: \`${queued}\``;
+  await sendThreadMessage(thread, {
+    content,
+    allowedMentions: { parse: [] }
+  }, discordApiOptions(), { action: "queue.notice", threadId: thread.id });
+}
+
 async function editTranscriptMessage(thread: ThreadChannel, state: ThreadState, jobId: string): Promise<void> {
   const running = state.running;
   if (!running?.codexTranscript) {
@@ -1969,7 +1934,7 @@ async function editRunningStatus(thread: ThreadChannel, state: ThreadState): Pro
     return;
   }
   await editDiscordMessage(running.statusMessage, {
-    content: renderFormattedMessage(buildStatusMessage(state, true)),
+    content: formatActivityMessage(state),
     components: runningComponents(),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), {
@@ -1978,6 +1943,66 @@ async function editRunningStatus(thread: ThreadChannel, state: ThreadState): Pro
     jobId: running.id,
     phase: running.phase
   }).catch(() => undefined);
+}
+
+async function deleteRunningActivityMessage(state: ThreadState): Promise<void> {
+  const running = state.running;
+  const message = running?.statusMessage;
+  if (!message) {
+    return;
+  }
+  running.statusMessage = undefined;
+  await message.delete().catch(() => undefined);
+}
+
+function formatActivityMessage(state: ThreadState): string {
+  const running = state.running;
+  const isKorean = config.language === "ko";
+  if (!running) {
+    return isKorean ? "작업 중입니다..." : "Working...";
+  }
+  const elapsed = formatCompactDuration(Date.now() - running.startedAt);
+  const lastEvent = running.lastEvent.trim();
+  const lines = [
+    isKorean ? "**생각 중...**" : "**Thinking...**",
+    `${isKorean ? "상태" : "Status"}: ${phaseText(running.phase)}`,
+    `${isKorean ? "시간" : "Elapsed"}: \`${elapsed}\``
+  ];
+  if (lastEvent) {
+    lines.push(`${isKorean ? "최근" : "Latest"}: ${escapeMarkdown(lastEvent)}`);
+  }
+  if (state.queue.length > 0) {
+    lines.push(`${isKorean ? "대기" : "Queued"}: \`${state.queue.length}\``);
+  }
+  return clip(lines.join("\n"), 1900);
+}
+
+function formatStoppedMessage(elapsedMs: number): string {
+  return config.language === "ko"
+    ? `작업을 중단했습니다. (${formatCompactDuration(elapsedMs)})`
+    : `Stopped. (${formatCompactDuration(elapsedMs)})`;
+}
+
+function formatFailureMessage(error: unknown, lastEvent?: string): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const title = config.language === "ko" ? "Codex 실행에 실패했습니다." : "Codex failed.";
+  const hint = lastEvent && lastEvent !== message ? `\n${config.language === "ko" ? "마지막 상태" : "Last status"}: ${escapeMarkdown(lastEvent)}` : "";
+  return clip(`${title}${hint}\n\`\`\`text\n${escapeCodeFence(message)}\n\`\`\``, 1900);
+}
+
+function phaseText(phase: string): string {
+  const phases = messages.phases as Record<string, string>;
+  return phases[phase] ?? phase;
+}
+
+function formatCompactDuration(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) {
+    return config.language === "ko" ? `${seconds}초` : `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remaining = seconds % 60;
+  return config.language === "ko" ? `${minutes}분 ${remaining}초` : `${minutes}m ${remaining}s`;
 }
 
 function discordApiOptions() {
