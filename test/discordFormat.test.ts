@@ -63,6 +63,22 @@ describe("splitDiscordMessage", () => {
     expect(outputField?.value.length).toBeLessThanOrEqual(1024);
   });
 
+  test("includes transcript in a separate status field", () => {
+    const embed = formatStatusEmbed({
+      running: true,
+      phase: "tool",
+      queued: 0,
+      transcript: "• Running `bun test`",
+      output: "응답 초안\n검증 중입니다."
+    }, "ko");
+
+    const transcriptField = embed.fields?.find((field) => field.name === "작업 로그");
+    const outputField = embed.fields?.find((field) => field.name === "출력");
+    expect(transcriptField?.value).toContain("bun test");
+    expect(outputField?.value).toContain("검증 중입니다.");
+    expect(outputField?.value).not.toContain("bun test");
+  });
+
   test("keeps long live output within embed field limits", () => {
     const embed = formatStatusEmbed({
       running: true,

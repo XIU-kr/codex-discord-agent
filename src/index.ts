@@ -48,7 +48,7 @@ import {
   formatWorkspaceEmbed,
 } from "./discordFormat";
 import { t } from "./i18n";
-import { buildCodexPrompt } from "./prompts";
+import { buildCodexPrompt, stripHiddenPromptContent } from "./prompts";
 import { runShellCommand, type ShellCommandResult, type ShellCommandSnapshot } from "./shellCommands";
 import { isStatusQuestion } from "./statusQuestions";
 import { commandNameFromAlias, formatCommandHelp, parseThreadCommand, type ThreadCommand, type ThreadCommandName } from "./threadCommands";
@@ -1030,7 +1030,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       },
       onResponseSnapshot: (content) => {
         if (state.running) {
-          state.running.codexResponse = formatCodexResponse(content, config.language);
+          state.running.codexResponse = formatCodexResponse(stripHiddenPromptContent(content), config.language);
         }
         scheduleLiveStatusEdit();
       },
@@ -1053,7 +1053,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     }
     if (streamedMessages === 0) {
       if (state.running) {
-        state.running.codexResponse = formatCodexResponse(result.content, config.language);
+        state.running.codexResponse = formatCodexResponse(stripHiddenPromptContent(result.content), config.language);
       }
     }
 
@@ -1070,6 +1070,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
           bytes: stats.bytes,
           usage: result.usage ?? state.running.usage,
           progress: state.running.progressEvents,
+          transcript: buildCodexTranscriptOutput(state.running),
           output: buildCodexLiveOutput(state.running)
         }, config.language)],
         components: idleComponents(),
@@ -1098,6 +1099,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
         await editDiscordMessage(running.statusMessage, {
           embeds: [formatRunStoppedEmbed({
             elapsedMs: Date.now() - startedAt,
+            transcript: buildCodexTranscriptOutput(running),
             output: buildCodexLiveOutput(running)
           }, config.language)],
           components: idleComponents(),
@@ -1117,6 +1119,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
             elapsedMs: Date.now() - startedAt,
             lastEvent: running.lastEvent,
             error: error instanceof Error ? error.message : String(error),
+            transcript: buildCodexTranscriptOutput(running),
             output: buildCodexLiveOutput(running)
           }, config.language)],
         components: failedComponents(),
@@ -1742,19 +1745,29 @@ function buildStatusEmbed(state: ThreadState, runningFlag: boolean) {
     queueSummary: formatQueueSummary(state.queue),
     usage: running?.usage,
     progress: running?.progressEvents,
+    transcript: running ? buildCodexTranscriptOutput(running) : undefined,
     output: running ? buildCodexLiveOutput(running) : undefined,
     warning: buildOperationalWarning()
   }, config.language);
 }
 
 function buildCodexLiveOutput(running: RunningJob): string | undefined {
-  const toolLabel = config.language === "ko" ? "도구 실행" : "Tool output";
   const assistantLabel = config.language === "ko" ? "응답 초안" : "Assistant";
-  const sections = [
-    running.codexTranscript ? `${toolLabel}\n${running.codexTranscript}` : "",
-    running.codexResponse ? `${assistantLabel}\n${running.codexResponse}` : ""
-  ].filter(Boolean);
-  return sections.length > 0 ? sections.join("\n\n") : undefined;
+  const response = stripHiddenPromptContent(running.codexResponse ?? "");
+  return response ? `${assistantLabel}\n${response}` : undefined;
+}
+
+function buildCodexTranscriptOutput(running: RunningJob): string | undefined {
+  const transcript = latestTranscriptEntries(stripHiddenPromptContent(running.codexTranscript ?? ""), 3);
+  return transcript.length > 0 ? transcript.join("\n\n") : undefined;
+}
+
+function latestTranscriptEntries(transcript: string, count: number): string[] {
+  return transcript
+    .split(/\n{2,}(?=• )/)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .slice(-count);
 }
 
 async function buildIdleStatusEmbed(thread: ThreadChannel, state: ThreadState | undefined) {

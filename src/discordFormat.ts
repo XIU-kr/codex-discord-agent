@@ -177,6 +177,7 @@ export function formatRunCompleteEmbed(options: {
   bytes?: number;
   usage?: CodexUsage;
   progress?: string[];
+  transcript?: string;
   output?: string;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
@@ -194,6 +195,9 @@ export function formatRunCompleteEmbed(options: {
   if (options.progress && options.progress.length > 0) {
     fields.push({ name: messages.labels.progress, value: formatProgress(options.progress) });
   }
+  if (options.transcript) {
+    fields.push({ name: messages.labels.transcript, value: formatLiveOutput(options.transcript, language) });
+  }
   if (options.output) {
     fields.push({ name: messages.labels.outputTokens, value: formatLiveOutput(options.output, language) });
   }
@@ -210,6 +214,7 @@ export function formatRunFailedEmbed(options: {
   elapsedMs: number;
   lastEvent?: string;
   error?: string;
+  transcript?: string;
   output?: string;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
@@ -222,6 +227,9 @@ export function formatRunFailedEmbed(options: {
   }
   if (options.lastEvent) {
     fields.push({ name: messages.labels.lastEvent, value: code(options.lastEvent) });
+  }
+  if (options.transcript) {
+    fields.push({ name: messages.labels.transcript, value: formatLiveOutput(options.transcript, language) });
   }
   if (options.output) {
     fields.push({ name: messages.labels.outputTokens, value: formatLiveOutput(options.output, language) });
@@ -237,12 +245,16 @@ export function formatRunFailedEmbed(options: {
 
 export function formatRunStoppedEmbed(options: {
   elapsedMs: number;
+  transcript?: string;
   output?: string;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
   const fields: DiscordEmbedField[] = [
     { name: messages.labels.elapsed, value: code(formatDuration(options.elapsedMs, language)), inline: true }
   ];
+  if (options.transcript) {
+    fields.push({ name: messages.labels.transcript, value: formatLiveOutput(options.transcript, language) });
+  }
   if (options.output) {
     fields.push({ name: messages.labels.outputTokens, value: formatLiveOutput(options.output, language) });
   }
@@ -285,6 +297,7 @@ export function formatStatusEmbed(options: {
   usage?: CodexUsage;
   warning?: string;
   progress?: string[];
+  transcript?: string;
   output?: string;
 }, language: BotLanguage = "en"): DiscordEmbed {
   const messages = t(language);
@@ -329,6 +342,9 @@ export function formatStatusEmbed(options: {
   }
   if (options.progress && options.progress.length > 0) {
     fields.push({ name: messages.labels.progress, value: formatProgress(options.progress) });
+  }
+  if (options.transcript) {
+    fields.push({ name: messages.labels.transcript, value: formatLiveOutput(options.transcript, language) });
   }
   if (options.output) {
     fields.push({ name: messages.labels.outputTokens, value: formatLiveOutput(options.output, language) });
