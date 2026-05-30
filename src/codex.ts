@@ -22,8 +22,13 @@ export interface CodexRunOptions {
   onUsage?: (usage: CodexUsage) => void;
   onResponseSnapshot?: (content: string) => void;
   onTranscriptSnapshot?: (content: string) => void;
+  onInteractiveTurn?: (ids: { threadId: string; turnId: string }) => void;
   onMessage?: (content: string) => void | Promise<void>;
 }
+
+export type CodexUserInputItem =
+  | { type: "text"; text: string; text_elements: [] }
+  | { type: "localImage"; path: string; detail?: "auto" | "low" | "high" };
 
 export interface CodexRunResult {
   content: string;
@@ -77,6 +82,515 @@ export interface CodexUsage {
   last?: CodexTokenUsage;
   modelContextWindow?: number;
   rateLimits?: CodexRateLimitUsage;
+}
+
+type JsonRpcId = number;
+
+interface JsonRpcSuccess {
+  id: JsonRpcId;
+  result?: unknown;
+}
+
+interface JsonRpcFailure {
+  id: JsonRpcId;
+  error?: { message?: string; code?: number; data?: unknown };
+}
+
+interface JsonRpcNotification {
+  method: string;
+  params?: unknown;
+}
+
+interface AppServerThreadResponse {
+  thread?: {
+    id?: string;
+    sessionId?: string;
+  };
+}
+
+interface AppServerTurnResponse {
+  turn?: {
+    id?: string;
+  };
+}
+
+interface AppServerRunState {
+  threadId?: string;
+  turnId?: string;
+  responseText: string;
+  completed: boolean;
+  error?: string;
+  usage?: CodexUsage;
+  transcriptEntries: string[];
+  pendingMessageHandlers: Promise<void>[];
+  notifiedAgentItemIds: Set<string>;
+}
+
+class CodexAppServerClient {
+  private child?: ChildProcessWithoutNullStreams;
+  private nextRequestId = 1;
+  private initialized?: Promise<void>;
+  private stdoutBuffer = "";
+  private stderr = "";
+  private pending = new Map<JsonRpcId, {
+    resolve: (value: unknown) => void;
+    reject: (error: Error) => void;
+  }>();
+  private listeners = new Set<(message: JsonRpcNotification) => void>();
+
+  constructor(private readonly codexBin: string) {}
+
+  async runTurn(options: CodexRunOptions): Promise<CodexRunResult> {
+    await this.ensureInitialized();
+    const state: AppServerRunState = {
+      responseText: "",
+      completed: false,
+      transcriptEntries: [],
+      pendingMessageHandlers: [],
+      notifiedAgentItemIds: new Set()
+    };
+
+    const removeListener = this.addNotificationListener((message) => {
+      markActivity();
+      this.handleTurnNotification(message, state, options);
+    });
+
+    let runTimeout: ReturnType<typeof setTimeout> | undefined;
+    let idleTimeout: ReturnType<typeof setTimeout> | undefined;
+    let terminationReason: "aborted" | "timeout" | "idle" | undefined;
+
+    const interrupt = (): void => {
+      terminationReason ??= options.signal?.aborted ? "aborted" : "timeout";
+      if (state.threadId && state.turnId) {
+        void this.request("turn/interrupt", {
+          threadId: state.threadId,
+          turnId: state.turnId
+        }).catch(() => undefined);
+      }
+    };
+    const refreshIdleTimeout = (): void => {
+      if (!options.idleTimeoutMs) {
+        return;
+      }
+      if (idleTimeout) {
+        clearTimeout(idleTimeout);
+      }
+      idleTimeout = setTimeout(() => {
+        terminationReason ??= "idle";
+        interrupt();
+      }, options.idleTimeoutMs);
+      idleTimeout.unref();
+    };
+    const markActivity = (): void => {
+      options.onActivity?.();
+      refreshIdleTimeout();
+    };
+    const abortHandler = (): void => {
+      terminationReason = "aborted";
+      interrupt();
+    };
+
+    try {
+      if (options.signal?.aborted) {
+        abortHandler();
+      } else {
+        options.signal?.addEventListener("abort", abortHandler, { once: true });
+      }
+      if (options.runTimeoutMs) {
+        runTimeout = setTimeout(() => {
+          terminationReason = "timeout";
+          interrupt();
+        }, options.runTimeoutMs);
+        runTimeout.unref();
+      }
+      refreshIdleTimeout();
+
+      const thread = await this.openThread(options);
+      state.threadId = thread.thread?.id ?? thread.thread?.sessionId ?? options.sessionId;
+      if (!state.threadId) {
+        throw new Error("Codex app server did not return a thread id.");
+      }
+
+      const turn = await this.request("turn/start", {
+        threadId: state.threadId,
+        input: buildAppServerInput(options),
+        model: options.model,
+        effort: options.reasoningEffort,
+        cwd: options.workspaceDir,
+        approvalPolicy: "never",
+        sandboxPolicy: { type: "dangerFullAccess" }
+      }) as AppServerTurnResponse;
+      state.turnId = turn.turn?.id;
+      if (!state.turnId) {
+        throw new Error("Codex app server did not return a turn id.");
+      }
+      options.onInteractiveTurn?.({ threadId: state.threadId, turnId: state.turnId });
+
+      options.onEvent?.({ phase: "codex", summary: "Codex interactive turn started." });
+      markActivity();
+
+      await new Promise<void>((resolve, reject) => {
+        const check = setInterval(() => {
+          if (state.completed) {
+            clearInterval(check);
+            resolve();
+          }
+          if (state.error) {
+            clearInterval(check);
+            reject(new Error(state.error));
+          }
+          if (terminationReason) {
+            clearInterval(check);
+            reject(new Error(terminationReason));
+          }
+        }, 200);
+        check.unref();
+      });
+
+      if (terminationReason === "aborted") {
+        throw new Error("Codex run was stopped by user request.");
+      }
+      if (terminationReason === "timeout") {
+        throw new Error(`Codex run exceeded the ${formatSeconds(options.runTimeoutMs)} limit and was stopped.`);
+      }
+      if (terminationReason === "idle") {
+        throw new Error(`Codex produced no output for ${formatSeconds(options.idleTimeoutMs)} and was stopped.`);
+      }
+      await Promise.all(state.pendingMessageHandlers);
+
+      return {
+        content: state.responseText.trim(),
+        sessionId: state.threadId,
+        usage: state.usage
+      };
+    } finally {
+      removeListener();
+      options.signal?.removeEventListener("abort", abortHandler);
+      if (runTimeout) {
+        clearTimeout(runTimeout);
+      }
+      if (idleTimeout) {
+        clearTimeout(idleTimeout);
+      }
+    }
+  }
+
+  async steerTurn(threadId: string, turnId: string, input: CodexUserInputItem[]): Promise<void> {
+    await this.ensureInitialized();
+    await this.request("turn/steer", {
+      threadId,
+      expectedTurnId: turnId,
+      input
+    });
+  }
+
+  private async openThread(options: CodexRunOptions): Promise<AppServerThreadResponse> {
+    const common = {
+      model: options.model,
+      cwd: options.workspaceDir,
+      runtimeWorkspaceRoots: [options.workspaceDir],
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      config: {
+        model_reasoning_effort: options.reasoningEffort
+      }
+    };
+    if (options.sessionId) {
+      try {
+        return await this.request("thread/resume", {
+          threadId: options.sessionId,
+          ...common,
+          excludeTurns: true
+        }) as AppServerThreadResponse;
+      } catch {
+        // Fall through to a new app-server thread if the persisted id cannot be resumed.
+      }
+    }
+    return await this.request("thread/start", common) as AppServerThreadResponse;
+  }
+
+  private handleTurnNotification(
+    message: JsonRpcNotification,
+    state: AppServerRunState,
+    options: CodexRunOptions
+  ): void {
+    const params = asRecord(message.params);
+    const threadId = stringValue(params.threadId);
+    const turnId = stringValue(params.turnId);
+    if (state.threadId && threadId && threadId !== state.threadId) {
+      return;
+    }
+    if (state.turnId && turnId && turnId !== state.turnId) {
+      return;
+    }
+
+    if (message.method === "thread/tokenUsage/updated") {
+      const usage = usageFromAppServer(asRecord(params.tokenUsage));
+      if (usage) {
+        state.usage = usage;
+        options.onUsage?.(usage);
+      }
+      return;
+    }
+
+    if (message.method === "item/agentMessage/delta") {
+      const delta = stringValue(params.delta);
+      if (delta) {
+        state.responseText += delta;
+        options.onResponseSnapshot?.(state.responseText);
+        options.onEvent?.({ phase: "responding", summary: "Codex is writing a response." });
+      }
+      return;
+    }
+
+    if (message.method === "item/commandExecution/outputDelta" || message.method === "item/fileChange/outputDelta") {
+      const delta = stringValue(params.delta);
+      if (delta) {
+        state.transcriptEntries.push(delta.trim());
+        options.onTranscriptSnapshot?.(latestNonEmptyEntries(state.transcriptEntries).join("\n\n"));
+        options.onEvent?.({ phase: "tool", summary: "Codex tool output received." });
+      }
+      return;
+    }
+
+    if (message.method === "item/mcpToolCall/progress") {
+      const progress = stringValue(params.message);
+      if (progress) {
+        state.transcriptEntries.push(progress);
+        options.onTranscriptSnapshot?.(latestNonEmptyEntries(state.transcriptEntries).join("\n\n"));
+        options.onEvent?.({ phase: "tool", summary: progress });
+      }
+      return;
+    }
+
+    if (message.method === "item/completed") {
+      const item = asRecord(params.item);
+      const itemType = stringValue(item.type);
+      if (itemType === "agentMessage") {
+        const text = stringValue(item.text);
+        const itemId = stringValue(item.id);
+        if (text && (!itemId || !state.notifiedAgentItemIds.has(itemId))) {
+          if (itemId) {
+            state.notifiedAgentItemIds.add(itemId);
+          }
+          state.responseText = text;
+          options.onResponseSnapshot?.(state.responseText);
+          const handler = options.onMessage;
+          if (handler) {
+            state.pendingMessageHandlers.push(withOptionalTimeout(
+              Promise.resolve(handler(text)),
+              options.messageHandlerTimeoutMs,
+              "Discord message handler"
+            ));
+          }
+        }
+      } else if (itemType === "commandExecution") {
+        const command = stringValue(item.command);
+        const output = stringValue(item.aggregatedOutput);
+        if (command || output) {
+          state.transcriptEntries.push([command ? `• Running \`${command}\`` : undefined, output].filter(Boolean).join("\n"));
+          options.onTranscriptSnapshot?.(latestNonEmptyEntries(state.transcriptEntries).join("\n\n"));
+        }
+      } else if (itemType === "mcpToolCall") {
+        const server = stringValue(item.server);
+        const tool = stringValue(item.tool);
+        if (server || tool) {
+          state.transcriptEntries.push(`• MCP tool: ${[server, tool].filter(Boolean).join("/")}`);
+          options.onTranscriptSnapshot?.(latestNonEmptyEntries(state.transcriptEntries).join("\n\n"));
+        }
+      }
+      return;
+    }
+
+    if (message.method === "turn/completed") {
+      const turn = asRecord(params.turn);
+      const status = stringValue(turn.status);
+      if (status === "failed") {
+        const error = asRecord(turn.error);
+        state.error = stringValue(error.message) ?? "Codex turn failed.";
+        state.completed = true;
+        return;
+      }
+      state.completed = true;
+      options.onEvent?.({ phase: "responding", summary: "Codex interactive turn completed." });
+      return;
+    }
+
+    if (message.method === "error") {
+      const error = asRecord(params.error);
+      options.onEvent?.({ phase: "failed", summary: stringValue(error.message) ?? "Codex reported an error." });
+    }
+  }
+
+  private async ensureInitialized(): Promise<void> {
+    this.initialized ??= (async () => {
+      this.start();
+      await this.request("initialize", {
+        clientInfo: {
+          name: "codex-discord-agent",
+          version: "0.0.33"
+        },
+        capabilities: null
+      });
+      this.notify("initialized");
+    })();
+    await this.initialized;
+  }
+
+  private start(): void {
+    if (this.child && !this.child.killed) {
+      return;
+    }
+    this.child = spawn(this.codexBin, ["app-server", "--listen", "stdio://"], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: process.env
+    });
+    this.child.stdout.setEncoding("utf8");
+    this.child.stdout.on("data", (chunk: string) => this.handleStdout(chunk));
+    this.child.stderr.setEncoding("utf8");
+    this.child.stderr.on("data", (chunk: string) => {
+      this.stderr += chunk;
+    });
+    this.child.on("close", () => {
+      const error = new Error(this.stderr.trim() || "Codex app server exited.");
+      for (const pending of this.pending.values()) {
+        pending.reject(error);
+      }
+      this.pending.clear();
+      this.child = undefined;
+      this.initialized = undefined;
+    });
+  }
+
+  private request(method: string, params: unknown): Promise<unknown> {
+    this.start();
+    const id = this.nextRequestId++;
+    const payload = JSON.stringify({ jsonrpc: "2.0", method, id, params });
+    this.child?.stdin.write(`${payload}\n`);
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+    });
+  }
+
+  private notify(method: string, params?: unknown): void {
+    this.start();
+    const payload = params === undefined
+      ? JSON.stringify({ jsonrpc: "2.0", method })
+      : JSON.stringify({ jsonrpc: "2.0", method, params });
+    this.child?.stdin.write(`${payload}\n`);
+  }
+
+  private addNotificationListener(listener: (message: JsonRpcNotification) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private handleStdout(chunk: string): void {
+    this.stdoutBuffer += chunk;
+    const lines = this.stdoutBuffer.split(/\r?\n/);
+    this.stdoutBuffer = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      const message = JSON.parse(trimmed) as JsonRpcSuccess | JsonRpcFailure | JsonRpcNotification;
+      if ("id" in message && this.pending.has(message.id)) {
+        const pending = this.pending.get(message.id);
+        this.pending.delete(message.id);
+        if ("error" in message && message.error) {
+          pending?.reject(new Error(message.error.message ?? `Codex app server request ${message.id} failed.`));
+        } else {
+          pending?.resolve((message as JsonRpcSuccess).result);
+        }
+      } else if ("method" in message) {
+        for (const listener of this.listeners) {
+          listener(message);
+        }
+      }
+    }
+  }
+}
+
+const appServerClients = new Map<string, CodexAppServerClient>();
+
+export async function runCodexInteractive(options: CodexRunOptions): Promise<CodexRunResult> {
+  let client = appServerClients.get(options.codexBin);
+  if (!client) {
+    client = new CodexAppServerClient(options.codexBin);
+    appServerClients.set(options.codexBin, client);
+  }
+  return client.runTurn(options);
+}
+
+export async function steerCodexInteractive(options: {
+  codexBin: string;
+  threadId: string;
+  turnId: string;
+  prompt: string;
+}): Promise<void> {
+  let client = appServerClients.get(options.codexBin);
+  if (!client) {
+    client = new CodexAppServerClient(options.codexBin);
+    appServerClients.set(options.codexBin, client);
+  }
+  await client.steerTurn(options.threadId, options.turnId, [{
+    type: "text",
+    text: options.prompt,
+    text_elements: []
+  }]);
+}
+
+function buildAppServerInput(options: CodexRunOptions): CodexUserInputItem[] {
+  const input: CodexUserInputItem[] = [{
+    type: "text",
+    text: options.prompt,
+    text_elements: []
+  }];
+  for (const imagePath of options.imagePaths ?? []) {
+    input.push({
+      type: "localImage",
+      path: imagePath,
+      detail: "auto"
+    });
+  }
+  return input;
+}
+
+function latestNonEmptyEntries(entries: string[], count = 6): string[] {
+  return entries
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .slice(-count);
+}
+
+function usageFromAppServer(value: Record<string, unknown>): CodexUsage | undefined {
+  const total = parseAppServerTokenUsage(value.total);
+  const last = parseAppServerTokenUsage(value.last);
+  const usage: CodexUsage = {};
+  if (total) {
+    usage.total = total;
+  }
+  if (last) {
+    usage.last = last;
+  }
+  const modelContextWindow = numberValue(value.modelContextWindow);
+  if (typeof modelContextWindow === "number") {
+    usage.modelContextWindow = modelContextWindow;
+  }
+  return usage.total || usage.last || usage.modelContextWindow ? usage : undefined;
+}
+
+function parseAppServerTokenUsage(value: unknown): CodexTokenUsage | undefined {
+  const record = asRecord(value);
+  const usage: CodexTokenUsage = {
+    inputTokens: numberValue(record.inputTokens),
+    cachedInputTokens: numberValue(record.cachedInputTokens),
+    outputTokens: numberValue(record.outputTokens),
+    reasoningOutputTokens: numberValue(record.reasoningOutputTokens),
+    totalTokens: numberValue(record.totalTokens)
+  };
+  return Object.values(usage).some((part) => typeof part === "number") ? usage : undefined;
 }
 
 export async function runCodex(options: CodexRunOptions): Promise<CodexRunResult> {
@@ -751,6 +1265,10 @@ function parseRateLimitWindowMinutes(value: unknown): number | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
 }
 
 function stringValue(value: unknown): string | undefined {

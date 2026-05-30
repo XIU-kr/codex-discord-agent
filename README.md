@@ -202,7 +202,7 @@ Configuration reference:
 - `ATTACHMENT_MAX_TOTAL_BYTES`: maximum downloaded size for all attachments in one job. Default: `104857600`.
 - `SHELL_COMMAND_TIMEOUT_SECONDS`: maximum wall-clock time for one Discord shell command. Default: `120`.
 - `SHELL_COMMAND_MAX_OUTPUT_BYTES`: maximum captured output for one Discord shell command. Default: `120000`.
-- `HIDE_WORKSPACE_PATHS`: set to `1` to hide server workspace paths in Discord embeds. Default: `0`.
+- `HIDE_WORKSPACE_PATHS`: set to `1` to hide server workspace paths in Discord messages. Default: `0`.
 - `BOT_LANGUAGE`: `en` or `ko`. Default: `en`.
 - `DISCORD_ALLOWED_USER_IDS`: comma-separated Discord user IDs allowed to run Codex. Empty means no user allowlist.
 - `DISCORD_ALLOWED_ROLE_IDS`: comma-separated Discord role IDs allowed to run Codex. Empty means no role allowlist.
@@ -310,7 +310,7 @@ Inside a managed thread:
 /코덱스명령 command:<이름> args:<인자>
 ```
 
-The bot creates one pinned control panel per managed thread when the thread is created or first used. Each Codex run uses a single status embed that is edited in place as progress events, tool command output, and assistant output arrive, so the thread does not fill with partial response messages. Running status messages keep only the common controls: refresh and stop. Failed jobs show retry. Settings, usage, logs, queue, doctor checks, workspace details, server shell commands, and Codex slash command pass-throughs are available through slash commands. Use direct commands such as `/goal` and `/plan`, their Korean aliases such as `/목표` and `/계획`, or `/codexcmd` / `/코덱스명령` for any Codex slash command not registered directly. Shell commands require a configured Discord allowlist; if both allowlist variables are empty, `/shell` is disabled.
+The bot creates one pinned text control panel per managed thread when the thread is created or first used. Codex runs through the interactive Codex app-server protocol instead of spawning a fresh `codex exec` process for every prompt. Assistant replies are delivered as normal chat messages, while tool transcript output is kept in one editable text message. If a new Discord message arrives while a Codex turn is active, the bot steers that message into the active turn when possible instead of interrupting and restarting the session. Running status messages keep only the common controls: refresh and stop. Failed jobs show retry. Settings, usage, logs, queue, doctor checks, workspace details, server shell commands, and Codex slash command pass-throughs are available through slash commands. Use direct commands such as `/goal` and `/plan`, their Korean aliases such as `/목표` and `/계획`, or `/codexcmd` / `/코덱스명령` for any Codex slash command not registered directly. Shell commands require a configured Discord allowlist; if both allowlist variables are empty, `/shell` is disabled.
 If the service restarts during a job, the bot marks the last running job as interrupted the next time the thread is used or checked. In-memory queued jobs are not restored after a restart.
 
 ## systemd
@@ -381,16 +381,18 @@ bun run start
 
 ## Codex Defaults
 
-First request:
+Codex requests use the experimental app-server JSON-RPC transport:
 
 ```bash
-codex exec --json -m gpt-5.5 -c 'model_reasoning_effort="high"' --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C <workspace> -
+codex app-server --listen stdio://
 ```
 
-Follow-up request:
+For each Discord thread, the bot starts or resumes a Codex app-server thread, then sends prompts with `turn/start`. Follow-up Discord messages during an active turn use `turn/steer` when no new attachments need to be saved.
 
 ```bash
-codex exec resume --json -m gpt-5.5 -c 'model_reasoning_effort="high"' --dangerously-bypass-approvals-and-sandbox <sessionId> -
+thread/start or thread/resume
+turn/start
+turn/steer
 ```
 
 `danger-full-access` is a powerful setting. Use this bot only in trusted Discord servers and channels.

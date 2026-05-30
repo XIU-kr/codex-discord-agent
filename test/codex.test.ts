@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { appendFile, chmod, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildCodexArgs, parseCodexJsonLine, readSessionLogAppend, runCodex, type CodexParseState } from "../src/codex";
+import { buildCodexArgs, parseCodexJsonLine, readSessionLogAppend, runCodex, runCodexInteractive, type CodexParseState } from "../src/codex";
 
 describe("buildCodexArgs", () => {
   test("builds first-run command with selected model and full access", () => {
@@ -339,5 +339,112 @@ describe("runCodex watchdogs", () => {
     expect(events.some((event) => event.includes("Running tests"))).toBe(true);
     expect(snapshots).toContain("done");
     expect(transcripts.some((transcript) => transcript.includes("bun test"))).toBe(true);
+  });
+});
+
+describe("runCodexInteractive", () => {
+  test("runs a Codex app-server turn and waits for message handlers", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "codex-discord-agent-"));
+    const bin = join(dir, "fake-codex");
+    await writeFile(
+      bin,
+      `#!/usr/bin/env node
+const readline = require("node:readline");
+const rl = readline.createInterface({ input: process.stdin });
+function write(message) {
+  process.stdout.write(JSON.stringify(message) + "\\n");
+}
+function respond(id, result) {
+  write({ jsonrpc: "2.0", id, result });
+}
+function notify(method, params) {
+  write({ jsonrpc: "2.0", method, params });
+}
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    respond(message.id, { userAgent: "fake", codexHome: "${dir}", platformFamily: "unix", platformOs: "linux" });
+    return;
+  }
+  if (message.method === "thread/start") {
+    respond(message.id, { thread: { id: "thread-1", sessionId: "thread-1" } });
+    return;
+  }
+  if (message.method === "turn/start") {
+    respond(message.id, { turn: { id: "turn-1", status: "inProgress" } });
+    setTimeout(() => {
+      notify("item/commandExecution/outputDelta", {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        delta: "ran tests"
+      });
+      notify("item/agentMessage/delta", {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "agent-1",
+        delta: "he"
+      });
+      notify("item/agentMessage/delta", {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "agent-1",
+        delta: "llo"
+      });
+      notify("thread/tokenUsage/updated", {
+        threadId: "thread-1",
+        tokenUsage: {
+          total: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+          last: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+          modelContextWindow: 100
+        }
+      });
+      notify("item/completed", {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: { type: "agentMessage", id: "agent-1", text: "hello" }
+      });
+      notify("turn/completed", {
+        threadId: "thread-1",
+        turn: { id: "turn-1", status: "completed" }
+      });
+      setTimeout(() => process.exit(0), 20);
+    }, 5);
+  }
+});
+`,
+      "utf8"
+    );
+    await chmod(bin, 0o700);
+
+    const snapshots: string[] = [];
+    const transcripts: string[] = [];
+    const messages: string[] = [];
+    const turns: string[] = [];
+    let messageHandlerFinished = false;
+
+    const result = await runCodexInteractive({
+      codexBin: bin,
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      prompt: "hello",
+      workspaceDir: dir,
+      onResponseSnapshot: (content) => snapshots.push(content),
+      onTranscriptSnapshot: (content) => transcripts.push(content),
+      onInteractiveTurn: ({ threadId, turnId }) => turns.push(`${threadId}:${turnId}`),
+      onMessage: async (content) => {
+        messages.push(content);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        messageHandlerFinished = true;
+      }
+    });
+
+    expect(result.content).toBe("hello");
+    expect(result.sessionId).toBe("thread-1");
+    expect(result.usage?.total?.totalTokens).toBe(5);
+    expect(snapshots).toContain("hello");
+    expect(transcripts.some((transcript) => transcript.includes("ran tests"))).toBe(true);
+    expect(turns).toEqual(["thread-1:turn-1"]);
+    expect(messages).toEqual(["hello"]);
+    expect(messageHandlerFinished).toBe(true);
   });
 });

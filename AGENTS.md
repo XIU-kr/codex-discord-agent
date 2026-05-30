@@ -34,7 +34,7 @@ Tests use `bun:test` with `describe`, `test`, and `expect`. Place new tests in `
 
 Recent commits use short, imperative, sentence-case messages, for example `Improve Discord Codex UX and resilience` or `Add Codex watchdog timeouts`. Follow that pattern and keep each commit scoped to one change.
 
-Pull requests should include a clear summary, test results, and any configuration or deployment impact. Link related issues when available. Include screenshots or copied Discord output when thread messages, embeds, or command responses change.
+Pull requests should include a clear summary, test results, and any configuration or deployment impact. Link related issues when available. Include screenshots or copied Discord output when thread messages, message panels, or command responses change.
 
 ## Security & Configuration Tips
 

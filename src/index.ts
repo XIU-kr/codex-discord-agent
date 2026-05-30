@@ -18,7 +18,7 @@ import {
   type ThreadChannel
 } from "discord.js";
 import { saveDiscordAttachments, formatAttachmentPrompt, type AttachmentSaveResult } from "./attachments";
-import { runCodex, type CodexUsage } from "./codex";
+import { runCodexInteractive, steerCodexInteractive, type CodexUsage } from "./codex";
 import { findLatestCodexSessionIdForWorkspace } from "./codexSessions";
 import {
   buildCodexSlashPrompt,
@@ -35,19 +35,19 @@ import {
 } from "./discordApi";
 import {
   formatCodexResponse,
-  formatControlPanelEmbed,
-  formatDoctorEmbed,
-  formatQueueEmbed,
-  formatRunCompleteEmbed,
-  formatRunFailedEmbed,
-  formatRunStartEmbed,
-  formatRunStoppedEmbed,
-  formatSettingsEmbed,
-  formatStatusEmbed,
-  formatUsageEmbed,
-  formatWorkspaceEmbed,
+  formatControlPanelMessage,
+  formatDoctorMessage,
+  formatQueueMessage,
+  formatRunCompleteMessage,
+  formatRunFailedMessage,
+  formatRunStartMessage,
+  formatRunStoppedMessage,
+  formatSettingsMessage,
+  formatStatusMessage,
+  formatUsageMessage,
+  formatWorkspaceMessage,
   splitDiscordMessage,
-  type DiscordEmbed
+  type FormattedDiscordMessage
 } from "./discordFormat";
 import { t } from "./i18n";
 import { buildCodexPrompt, stripHiddenPromptContent } from "./prompts";
@@ -113,6 +113,8 @@ interface RunningJob {
   progressEvents: string[];
   codexResponse?: string;
   codexTranscript?: string;
+  codexThreadId?: string;
+  codexTurnId?: string;
   job: QueuedJob;
 }
 
@@ -377,6 +379,17 @@ client.on(Events.MessageCreate, async (message) => {
   }
 
   if (state?.running) {
+    if (state.running.codexThreadId && state.running.codexTurnId && message.attachments.size === 0) {
+      await steerCodexInteractive({
+        codexBin: config.codexBin,
+        threadId: state.running.codexThreadId,
+        turnId: state.running.codexTurnId,
+        prompt: formatSteerPrompt(prompt || messages.analyzeAttachments)
+      });
+      await persistRunningJob(state, "codex", "New Discord message sent to the active Codex turn.");
+      await editRunningStatus(thread, state);
+      return;
+    }
     const queuedJob = createQueuedJob([message], prompt);
     queuedJob.prompt = formatInterruptPrompt(state.running.job, queuedJob);
     queuedJob.promptSummary = summarizePrompt(`${queuedJob.promptSummary} (follow-up)`);
@@ -651,6 +664,15 @@ function formatInterruptPrompt(previousJob: QueuedJob, nextJob: QueuedJob): stri
     "",
     "New user message:",
     nextJob.prompt.trim() || messages.analyzeAttachments
+  ].join("\n");
+}
+
+function formatSteerPrompt(prompt: string): string {
+  return [
+    "A new Discord message arrived while you are working.",
+    "Incorporate or answer it in the active turn, then continue naturally.",
+    "",
+    prompt.trim() || messages.analyzeAttachments
   ].join("\n");
 }
 
@@ -941,7 +963,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     });
 
     const statusMessage = await sendThreadMessage(thread, {
-      content: formatEmbedAsMessage(formatRunStartEmbed({
+      content: renderFormattedMessage(formatRunStartMessage({
         jobId: job.id,
         workspaceDir: displayWorkspacePath(thread.id, workspace.dir),
         model: settings.model,
@@ -1010,8 +1032,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
         return;
       }
       void editDiscordMessage(running.statusMessage, {
-        content: formatEmbedAsMessage(buildStatusEmbed(state, true)),
-        embeds: [],
+        content: renderFormattedMessage(buildStatusMessage(state, true)),
         components: runningComponents(),
         allowedMentions: { parse: [] }
       }, discordApiOptions(), {
@@ -1024,7 +1045,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
 
     await persistRunningJob(state, "codex", "Codex process started.");
     await editRunningStatus(thread, state);
-    const result = await runCodex({
+    const result = await runCodexInteractive({
       codexBin: config.codexBin,
       model: settings.model,
       reasoningEffort: settings.reasoningEffort,
@@ -1066,6 +1087,12 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
         }
         scheduleTranscriptEdit();
       },
+      onInteractiveTurn: ({ threadId, turnId }) => {
+        if (state.running) {
+          state.running.codexThreadId = threadId;
+          state.running.codexTurnId = turnId;
+        }
+      },
       onMessage: async (content) => {
         const codexResponse = formatCodexResponse(stripHiddenPromptContent(content), config.language);
         if (state.running) {
@@ -1097,7 +1124,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     if (state.running?.statusMessage) {
       const stats = await getWorkspaceStats(workspace);
       await editDiscordMessage(state.running.statusMessage, {
-        content: formatEmbedAsMessage(formatRunCompleteEmbed({
+        content: renderFormattedMessage(formatRunCompleteMessage({
           elapsedMs: Date.now() - startedAt,
           sessionId: result.sessionId ?? sessionId,
           files: stats.files,
@@ -1105,7 +1132,6 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
           usage: result.usage ?? state.running.usage,
           progress: state.running.progressEvents
         }, config.language)),
-        embeds: [],
         components: idleComponents(),
         allowedMentions: { parse: [] }
       }, discordApiOptions(), { action: "job.complete.edit", threadId: thread.id, jobId: job.id, phase: "completed" });
@@ -1117,8 +1143,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       await persistRunningJob(state, "interrupted", "Paused for a new Discord message.", "running");
       if (running.statusMessage) {
         await editDiscordMessage(running.statusMessage, {
-          content: formatEmbedAsMessage(buildStatusEmbed(state, true)),
-          embeds: [],
+          content: renderFormattedMessage(buildStatusMessage(state, true)),
           components: runningComponents(),
           allowedMentions: { parse: [] }
         }, discordApiOptions(), { action: "job.interrupted.edit", threadId: thread.id, jobId: running.id, phase: "interrupted" })
@@ -1131,10 +1156,9 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       await persistRunningJob(state, "stopped", "Codex job stopped.", "stopped");
       if (running.statusMessage) {
         await editDiscordMessage(running.statusMessage, {
-          content: formatEmbedAsMessage(formatRunStoppedEmbed({
+          content: renderFormattedMessage(formatRunStoppedMessage({
             elapsedMs: Date.now() - startedAt
           }, config.language)),
-          embeds: [],
           components: idleComponents(),
           allowedMentions: { parse: [] }
         }, discordApiOptions(), { action: "job.stopped.edit", threadId: thread.id, jobId: running.id, phase: "stopped" })
@@ -1148,12 +1172,11 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     await persistRunningJob(state, "failed", error instanceof Error ? error.message : String(error), "failed");
     if (running?.statusMessage) {
       await editDiscordMessage(running.statusMessage, {
-          content: formatEmbedAsMessage(formatRunFailedEmbed({
+          content: renderFormattedMessage(formatRunFailedMessage({
             elapsedMs: Date.now() - startedAt,
             lastEvent: running.lastEvent,
             error: error instanceof Error ? error.message : String(error)
           }, config.language)),
-        embeds: [],
         components: failedComponents(),
         allowedMentions: { parse: [] }
       }, discordApiOptions(), { action: "job.failed.edit", threadId: thread.id, jobId: running.id, phase: "failed" })
@@ -1207,7 +1230,7 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
       const stats = await getWorkspaceStats(workspace);
       const sessionId = await loadOrRecoverSessionId(workspace);
       await sendThreadMessage(thread, {
-        content: formatEmbedAsMessage(formatWorkspaceEmbed({
+        content: renderFormattedMessage(formatWorkspaceMessage({
           path: displayWorkspacePath(thread.id, workspace.dir),
           sessionId,
           files: stats.files,
@@ -1302,7 +1325,7 @@ async function handleShellCommand(thread: ThreadChannel, commandText: string): P
 
   await sendThreadTyping(thread, discordApiOptions(), { action: "command.shell.typing", threadId: thread.id });
   const statusMessage = await sendThreadMessage(thread, {
-    content: formatEmbedAsMessage(formatShellCommandEmbed({
+    content: renderFormattedMessage(formatShellCommandMessage({
       command,
       cwd: process.cwd(),
       durationMs: 0,
@@ -1316,7 +1339,7 @@ async function handleShellCommand(thread: ThreadChannel, commandText: string): P
   let pendingEdit: ReturnType<typeof setTimeout> | undefined;
   let queuedSnapshot: ShellCommandSnapshot | undefined;
 
-  const editShellEmbed = (snapshot: ShellCommandSnapshot, force = false): void => {
+  const editShellMessage = (snapshot: ShellCommandSnapshot, force = false): void => {
     const now = Date.now();
     const elapsed = now - lastEditAt;
     if (!force && elapsed < 1_000) {
@@ -1325,7 +1348,7 @@ async function handleShellCommand(thread: ThreadChannel, commandText: string): P
         pendingEdit = setTimeout(() => {
           pendingEdit = undefined;
           if (queuedSnapshot) {
-            editShellEmbed(queuedSnapshot, true);
+            editShellMessage(queuedSnapshot, true);
             queuedSnapshot = undefined;
           }
         }, 1_000 - elapsed);
@@ -1335,8 +1358,7 @@ async function handleShellCommand(thread: ThreadChannel, commandText: string): P
     }
     lastEditAt = now;
     void editDiscordMessage(statusMessage, {
-      content: formatEmbedAsMessage(formatShellCommandEmbed(snapshot, "running")),
-      embeds: [],
+      content: renderFormattedMessage(formatShellCommandMessage(snapshot, "running")),
       allowedMentions: { parse: [] }
     }, discordApiOptions(), { action: "command.shell.update", threadId: thread.id }).catch(() => undefined);
   };
@@ -1346,14 +1368,13 @@ async function handleShellCommand(thread: ThreadChannel, commandText: string): P
     timeoutMs: config.shellCommandTimeoutMs,
     maxOutputBytes: config.shellCommandMaxOutputBytes,
     env: process.env,
-    onOutput: editShellEmbed
+    onOutput: editShellMessage
   });
   if (pendingEdit) {
     clearTimeout(pendingEdit);
   }
   await editDiscordMessage(statusMessage, {
-    content: formatEmbedAsMessage(formatShellCommandEmbed(result, result.blockedReason ? "blocked" : "complete")),
-    embeds: [],
+    content: renderFormattedMessage(formatShellCommandMessage(result, result.blockedReason ? "blocked" : "complete")),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "command.shell.complete", threadId: thread.id });
 }
@@ -1373,7 +1394,7 @@ async function notifyInterruptedIfAny(thread: ThreadChannel): Promise<void> {
     return;
   }
   await sendThreadMessage(thread, {
-    content: formatEmbedAsMessage(formatStatusEmbed({
+    content: renderFormattedMessage(formatStatusMessage({
       running: false,
       jobId: interrupted.jobId,
       phase: interrupted.phase,
@@ -1541,6 +1562,17 @@ async function enqueueInteractionPrompt(
   const state = threadStates.get(thread.id);
   const job = createQueuedJobFromInteraction(interaction, prompt, thread.id);
   if (state?.running) {
+    if (state.running.codexThreadId && state.running.codexTurnId) {
+      await steerCodexInteractive({
+        codexBin: config.codexBin,
+        threadId: state.running.codexThreadId,
+        turnId: state.running.codexTurnId,
+        prompt: formatSteerPrompt(prompt)
+      });
+      await persistRunningJob(state, "codex", "New Discord command sent to the active Codex turn.");
+      await editRunningStatus(thread, state);
+      return;
+    }
     job.prompt = formatInterruptPrompt(state.running.job, job);
     job.promptSummary = summarizePrompt(`${job.promptSummary} (follow-up)`);
     state.queue.push(job);
@@ -1602,11 +1634,10 @@ async function handleSelectMenuInteraction(interaction: StringSelectMenuInteract
     const state = getThreadState(thread.id);
     state.selectedQueueJobId = interaction.values[0];
     await interaction.update({
-      content: formatEmbedAsMessage(formatQueueEmbed({
+      content: renderFormattedMessage(formatQueueMessage({
         jobs: state.queue,
         selectedJobId: state.selectedQueueJobId
       }, config.language)),
-      embeds: [],
       components: queueComponents(state),
       allowedMentions: { parse: [] }
     });
@@ -1637,8 +1668,7 @@ async function handleSelectMenuInteraction(interaction: StringSelectMenuInteract
   }
 
   await interaction.update({
-    content: formatEmbedAsMessage(formatSettingsEmbed(settings, config.language)),
-    embeds: [],
+    content: renderFormattedMessage(formatSettingsMessage(settings, config.language)),
     components: settingsComponents(settings),
     allowedMentions: { parse: [] }
   });
@@ -1769,9 +1799,9 @@ function settingsComponents(settings: ThreadSettings): ActionRowBuilder<StringSe
   ];
 }
 
-function buildStatusEmbed(state: ThreadState, runningFlag: boolean) {
+function buildStatusMessage(state: ThreadState, runningFlag: boolean) {
   const running = state.running;
-  return formatStatusEmbed({
+  return formatStatusMessage({
     running: runningFlag,
     jobId: running?.id,
     phase: running?.phase,
@@ -1812,7 +1842,6 @@ async function editTranscriptMessage(thread: ThreadChannel, state: ThreadState, 
   const content = formatTranscriptMessage(running.codexTranscript);
   const options = {
     content,
-    embeds: [],
     allowedMentions: { parse: [] }
   };
   if (running.transcriptMessage) {
@@ -1856,10 +1885,10 @@ function latestTranscriptEntries(transcript: string, count: number): string[] {
     .slice(-count);
 }
 
-async function buildIdleStatusEmbed(thread: ThreadChannel, state: ThreadState | undefined) {
+async function buildIdleStatusMessage(thread: ThreadChannel, state: ThreadState | undefined) {
   const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
   const lastJob = await loadJobState(workspace);
-  return formatStatusEmbed({
+  return formatStatusMessage({
     running: false,
     jobId: lastJob?.jobId,
     phase: lastJob?.status,
@@ -1940,8 +1969,7 @@ async function editRunningStatus(thread: ThreadChannel, state: ThreadState): Pro
     return;
   }
   await editDiscordMessage(running.statusMessage, {
-    content: formatEmbedAsMessage(buildStatusEmbed(state, true)),
-    embeds: [],
+    content: renderFormattedMessage(buildStatusMessage(state, true)),
     components: runningComponents(),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), {
@@ -1975,21 +2003,21 @@ function escapeMarkdown(value: string): string {
   return value.replace(/([*_`~|])/g, "\\$1");
 }
 
-function formatEmbedAsMessage(embed: DiscordEmbed): string {
+function renderFormattedMessage(message: FormattedDiscordMessage): string {
   const lines = [
-    `**${embed.title}**`,
-    embed.description,
-    ...(embed.fields ?? []).map((field) => `**${field.name}**\n${field.value}`)
+    `**${message.title}**`,
+    message.description,
+    ...(message.fields ?? []).map((field) => `**${field.name}**\n${field.value}`)
   ].filter((line): line is string => typeof line === "string" && line.trim().length > 0);
   return clip(lines.join("\n\n"), 1900);
 }
 
 async function sendThreadStatus(thread: ThreadChannel, state: ThreadState | undefined): Promise<void> {
-  const embed = state?.running
-    ? buildStatusEmbed(state, true)
-    : await buildIdleStatusEmbed(thread, state);
+  const message = state?.running
+    ? buildStatusMessage(state, true)
+    : await buildIdleStatusMessage(thread, state);
   await sendThreadMessage(thread, {
-    content: formatEmbedAsMessage(embed),
+    content: renderFormattedMessage(message),
     components: state?.running ? runningComponents() : idleComponents(),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "status.send", threadId: thread.id, jobId: state?.running?.id, phase: state?.running?.phase });
@@ -1997,8 +2025,8 @@ async function sendThreadStatus(thread: ThreadChannel, state: ThreadState | unde
 
 async function ensureControlPanel(thread: ThreadChannel, state: ThreadState | undefined): Promise<Message> {
   const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
-  const embed = state?.running
-    ? formatControlPanelEmbed({
+  const message = state?.running
+    ? formatControlPanelMessage({
       running: true,
       jobId: state.running.id,
       phase: state.running.phase,
@@ -2008,7 +2036,7 @@ async function ensureControlPanel(thread: ThreadChannel, state: ThreadState | un
       progress: state.running.progressEvents,
       warning: buildOperationalWarning()
     }, config.language)
-    : formatControlPanelEmbed({
+    : formatControlPanelMessage({
       running: false,
       queued: state?.queue.length ?? 0,
       queueSummary: formatQueueSummary(state?.queue ?? []),
@@ -2016,8 +2044,7 @@ async function ensureControlPanel(thread: ThreadChannel, state: ThreadState | un
     }, config.language);
 
   const options = {
-    content: formatEmbedAsMessage(embed),
-    embeds: [],
+    content: renderFormattedMessage(message),
     components: state?.running ? runningComponents() : idleComponents(),
     allowedMentions: { parse: [] }
   };
@@ -2065,8 +2092,7 @@ async function findPinnedControlPanel(thread: ThreadChannel): Promise<Message | 
   const titles = new Set(["Codex control panel", "Codex 컨트롤 패널", plainPanelTitle()]);
   return pinned?.find((message) =>
     message.author.id === client.user?.id &&
-    (message.embeds.some((embed) => embed.title ? titles.has(embed.title) : false) ||
-      [...titles].some((title) => message.content.includes(title)))
+    [...titles].some((title) => message.content.includes(title))
   );
 }
 
@@ -2090,7 +2116,7 @@ function plainPanelTitle(): string {
 async function sendThreadSettings(thread: ThreadChannel): Promise<void> {
   const settings = getThreadSettings(thread.id);
   await sendThreadMessage(thread, {
-    content: formatEmbedAsMessage(formatSettingsEmbed(settings, config.language)),
+    content: renderFormattedMessage(formatSettingsMessage(settings, config.language)),
     components: settingsComponents(settings),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "settings.send", threadId: thread.id });
@@ -2098,7 +2124,7 @@ async function sendThreadSettings(thread: ThreadChannel): Promise<void> {
 
 async function sendThreadQueue(thread: ThreadChannel, state: ThreadState | undefined): Promise<void> {
   await sendThreadMessage(thread, {
-    content: formatEmbedAsMessage(formatQueueEmbed({
+    content: renderFormattedMessage(formatQueueMessage({
       jobs: state?.queue ?? [],
       selectedJobId: state?.selectedQueueJobId
     }, config.language)),
@@ -2111,7 +2137,7 @@ async function sendThreadDoctor(thread: ThreadChannel): Promise<void> {
   const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
   const checks = await runDoctor(config, workspace);
   await sendThreadMessage(thread, {
-    content: formatEmbedAsMessage(formatDoctorEmbed(checks, config.language)),
+    content: renderFormattedMessage(formatDoctorMessage(checks, config.language)),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "doctor.send", threadId: thread.id });
 }
@@ -2119,7 +2145,7 @@ async function sendThreadDoctor(thread: ThreadChannel): Promise<void> {
 async function sendThreadUsage(thread: ThreadChannel, state: ThreadState | undefined): Promise<void> {
   const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
   await sendThreadMessage(thread, {
-    content: formatEmbedAsMessage(formatUsageEmbed(state?.running?.usage ?? await loadUsageState(workspace), config.language)),
+    content: renderFormattedMessage(formatUsageMessage(state?.running?.usage ?? await loadUsageState(workspace), config.language)),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "usage.send", threadId: thread.id });
 }
@@ -2208,10 +2234,10 @@ function formatShellDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function formatShellCommandEmbed(
+function formatShellCommandMessage(
   result: ShellCommandSnapshot | ShellCommandResult,
   phase: "running" | "complete" | "blocked"
-): { title: string; description: string; color: number; timestamp: string } {
+): FormattedDiscordMessage {
   const isKorean = config.language === "ko";
   const blockedReason = "blockedReason" in result ? result.blockedReason : undefined;
   const status = blockedReason
@@ -2231,13 +2257,11 @@ function formatShellCommandEmbed(
     "```text"
   ].join("\n");
   const footer = `\n\`\`\`${result.truncated ? isKorean ? "\n_출력 수집 한도에 도달했습니다._" : "\n_Output capture limit reached._" : ""}`;
-  const outputBody = tailForEmbed(escapeCodeFence(output), 4096 - header.length - footer.length);
+  const outputBody = tailForMessage(escapeCodeFence(output), 4096 - header.length - footer.length);
 
   return {
     title: isKorean ? "서버 셸 명령" : "Server shell command",
-    description: `${header}\n${outputBody}${footer}`,
-    color: shellEmbedColor(result, phase),
-    timestamp: new Date().toISOString()
+    description: `${header}\n${outputBody}${footer}`
   };
 }
 
@@ -2254,17 +2278,7 @@ function shellExitStatus(result: ShellCommandSnapshot | ShellCommandResult): str
   return "running";
 }
 
-function shellEmbedColor(result: ShellCommandSnapshot | ShellCommandResult, phase: "running" | "complete" | "blocked"): number {
-  if (phase === "blocked" || result.timedOut || ("exitCode" in result && result.exitCode !== 0)) {
-    return 0xeb5757;
-  }
-  if (phase === "complete") {
-    return 0x27ae60;
-  }
-  return 0x2f80ed;
-}
-
-function tailForEmbed(value: string, limit: number): string {
+function tailForMessage(value: string, limit: number): string {
   const safeLimit = Math.max(200, limit);
   if (value.length <= safeLimit) {
     return value;

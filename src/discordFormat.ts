@@ -5,25 +5,17 @@ import type { CodexTokenUsage, CodexUsage } from "./codex";
 export const DISCORD_MESSAGE_LIMIT = 2000;
 const DEFAULT_CHUNK_LIMIT = 1900;
 const FILE_RESPONSE_THRESHOLD = 8_000;
-const embedColors = {
-  running: 0x2f80ed,
-  complete: 0x27ae60,
-  failed: 0xeb5757,
-  neutral: 0x5865f2
-} as const;
 
-export interface DiscordEmbedField {
+export interface DiscordMessageField {
   name: string;
   value: string;
   inline?: boolean;
 }
 
-export interface DiscordEmbed {
+export interface FormattedDiscordMessage {
   title: string;
   description?: string;
-  color?: number;
-  fields?: DiscordEmbedField[];
-  timestamp?: string;
+  fields?: DiscordMessageField[];
 }
 
 export function splitDiscordMessage(input: string, limit = DEFAULT_CHUNK_LIMIT, language: BotLanguage = "en"): string[] {
@@ -141,7 +133,7 @@ export function formatRunComplete(options: {
   return lines.join("\n");
 }
 
-export function formatRunStartEmbed(options: {
+export function formatRunStartMessage(options: {
   jobId?: string;
   workspaceDir: string;
   model: string;
@@ -150,9 +142,9 @@ export function formatRunStartEmbed(options: {
   queued: number;
   warning?: string;
   progress?: string[];
-}, language: BotLanguage = "en"): DiscordEmbed {
+}, language: BotLanguage = "en"): FormattedDiscordMessage {
   const messages = t(language);
-  const fields: DiscordEmbedField[] = [
+  const fields: DiscordMessageField[] = [
     { name: messages.labels.model, value: code(options.model), inline: true },
     { name: messages.labels.reasoning, value: code(options.reasoningEffort), inline: true },
     { name: messages.labels.queued, value: code(String(options.queued)), inline: true }
@@ -164,13 +156,11 @@ export function formatRunStartEmbed(options: {
   return {
     title: plainTitle(messages.runStart),
     description: options.warning,
-    color: embedColors.running,
-    timestamp: new Date().toISOString(),
     fields
   };
 }
 
-export function formatRunCompleteEmbed(options: {
+export function formatRunCompleteMessage(options: {
   elapsedMs: number;
   sessionId?: string;
   files?: number;
@@ -179,9 +169,9 @@ export function formatRunCompleteEmbed(options: {
   progress?: string[];
   transcript?: string;
   output?: string;
-}, language: BotLanguage = "en"): DiscordEmbed {
+}, language: BotLanguage = "en"): FormattedDiscordMessage {
   const messages = t(language);
-  const fields: DiscordEmbedField[] = [
+  const fields: DiscordMessageField[] = [
     { name: messages.labels.elapsed, value: code(formatDuration(options.elapsedMs, language)), inline: true }
   ];
 
@@ -204,21 +194,19 @@ export function formatRunCompleteEmbed(options: {
 
   return {
     title: plainTitle(messages.runComplete),
-    color: embedColors.complete,
-    timestamp: new Date().toISOString(),
     fields
   };
 }
 
-export function formatRunFailedEmbed(options: {
+export function formatRunFailedMessage(options: {
   elapsedMs: number;
   lastEvent?: string;
   error?: string;
   transcript?: string;
   output?: string;
-}, language: BotLanguage = "en"): DiscordEmbed {
+}, language: BotLanguage = "en"): FormattedDiscordMessage {
   const messages = t(language);
-  const fields: DiscordEmbedField[] = [
+  const fields: DiscordMessageField[] = [
     { name: messages.labels.elapsed, value: code(formatDuration(options.elapsedMs, language)), inline: true }
   ];
   if (options.error) {
@@ -237,19 +225,17 @@ export function formatRunFailedEmbed(options: {
 
   return {
     title: plainTitle(messages.runFailed),
-    color: embedColors.failed,
-    timestamp: new Date().toISOString(),
     fields
   };
 }
 
-export function formatRunStoppedEmbed(options: {
+export function formatRunStoppedMessage(options: {
   elapsedMs: number;
   transcript?: string;
   output?: string;
-}, language: BotLanguage = "en"): DiscordEmbed {
+}, language: BotLanguage = "en"): FormattedDiscordMessage {
   const messages = t(language);
-  const fields: DiscordEmbedField[] = [
+  const fields: DiscordMessageField[] = [
     { name: messages.labels.elapsed, value: code(formatDuration(options.elapsedMs, language)), inline: true }
   ];
   if (options.transcript) {
@@ -260,21 +246,17 @@ export function formatRunStoppedEmbed(options: {
   }
   return {
     title: plainTitle(messages.runStopped),
-    color: embedColors.neutral,
-    timestamp: new Date().toISOString(),
     fields
   };
 }
 
-export function formatRunRestartedEmbed(options: {
+export function formatRunRestartedMessage(options: {
   elapsedMs: number;
   queued: number;
-}, language: BotLanguage = "en"): DiscordEmbed {
+}, language: BotLanguage = "en"): FormattedDiscordMessage {
   const messages = t(language);
   return {
     title: plainTitle(messages.runRestarted),
-    color: embedColors.running,
-    timestamp: new Date().toISOString(),
     fields: [
       { name: messages.labels.elapsed, value: code(formatDuration(options.elapsedMs, language)), inline: true },
       { name: messages.labels.queued, value: code(String(options.queued)), inline: true }
@@ -282,7 +264,7 @@ export function formatRunRestartedEmbed(options: {
   };
 }
 
-export function formatStatusEmbed(options: {
+export function formatStatusMessage(options: {
   running: boolean;
   jobId?: string;
   phase?: string;
@@ -299,9 +281,9 @@ export function formatStatusEmbed(options: {
   progress?: string[];
   transcript?: string;
   output?: string;
-}, language: BotLanguage = "en"): DiscordEmbed {
+}, language: BotLanguage = "en"): FormattedDiscordMessage {
   const messages = t(language);
-  const fields: DiscordEmbedField[] = [
+  const fields: DiscordMessageField[] = [
     { name: messages.labels.running, value: code(options.running ? messages.values.yes : messages.values.no), inline: true },
     { name: messages.labels.queued, value: code(String(options.queued)), inline: true }
   ];
@@ -356,26 +338,22 @@ export function formatStatusEmbed(options: {
   return {
     title: plainTitle(messages.statusTitle),
     description: options.warning,
-    color: options.running ? embedColors.running : embedColors.neutral,
-    timestamp: new Date().toISOString(),
     fields
   };
 }
 
-export function formatUsageEmbed(usage: CodexUsage | undefined, language: BotLanguage = "en"): DiscordEmbed {
+export function formatUsageMessage(usage: CodexUsage | undefined, language: BotLanguage = "en"): FormattedDiscordMessage {
   const messages = t(language);
-  const fields: DiscordEmbedField[] = [];
+  const fields: DiscordMessageField[] = [];
   appendUsageFields(fields, usage, language, true);
   return {
     title: plainTitle(messages.usageTitle),
     description: usage ? undefined : messages.usageEmpty,
-    color: embedColors.neutral,
-    timestamp: new Date().toISOString(),
     fields
   };
 }
 
-export function formatControlPanelEmbed(options: {
+export function formatControlPanelMessage(options: {
   running: boolean;
   jobId?: string;
   phase?: string;
@@ -384,9 +362,9 @@ export function formatControlPanelEmbed(options: {
   queueSummary?: string;
   warning?: string;
   progress?: string[];
-}, language: BotLanguage = "en"): DiscordEmbed {
+}, language: BotLanguage = "en"): FormattedDiscordMessage {
   const messages = t(language);
-  const status = formatStatusEmbed(options, language);
+  const status = formatStatusMessage(options, language);
   return {
     ...status,
     title: plainTitle(messages.panelTitle),
@@ -394,20 +372,18 @@ export function formatControlPanelEmbed(options: {
   };
 }
 
-export function formatWorkspaceEmbed(options: {
+export function formatWorkspaceMessage(options: {
   path: string;
   sessionId?: string;
   files: number;
   bytes: number;
   updatedAt?: Date;
   warning?: string;
-}, language: BotLanguage = "en"): DiscordEmbed {
+}, language: BotLanguage = "en"): FormattedDiscordMessage {
   const messages = t(language);
   return {
     title: plainTitle(messages.workspaceTitle),
     description: options.warning,
-    color: embedColors.neutral,
-    timestamp: new Date().toISOString(),
     fields: [
       { name: messages.labels.path, value: code(options.path) },
       { name: messages.labels.session, value: code(options.sessionId ?? messages.values.none), inline: true },
@@ -417,17 +393,15 @@ export function formatWorkspaceEmbed(options: {
   };
 }
 
-export function formatSettingsEmbed(options: {
+export function formatSettingsMessage(options: {
   model: string;
   reasoningEffort: string;
   hideWorkspacePaths: boolean;
   includeAttachments: boolean;
-}, language: BotLanguage = "en"): DiscordEmbed {
+}, language: BotLanguage = "en"): FormattedDiscordMessage {
   const messages = t(language);
   return {
     title: plainTitle(messages.settingsTitle),
-    color: embedColors.neutral,
-    timestamp: new Date().toISOString(),
     fields: [
       { name: messages.labels.model, value: code(options.model), inline: true },
       { name: messages.labels.reasoning, value: code(options.reasoningEffort), inline: true },
@@ -445,7 +419,7 @@ export function formatSettingsEmbed(options: {
   };
 }
 
-export function formatQueueEmbed(options: {
+export function formatQueueMessage(options: {
   jobs: Array<{
     id: string;
     authorName: string;
@@ -454,9 +428,9 @@ export function formatQueueEmbed(options: {
     attachmentCount: number;
   }>;
   selectedJobId?: string;
-}, language: BotLanguage = "en"): DiscordEmbed {
+}, language: BotLanguage = "en"): FormattedDiscordMessage {
   const messages = t(language);
-  const fields: DiscordEmbedField[] = [
+  const fields: DiscordMessageField[] = [
     { name: messages.labels.queued, value: code(String(options.jobs.length)), inline: true }
   ];
 
@@ -480,22 +454,14 @@ export function formatQueueEmbed(options: {
   return {
     title: plainTitle(messages.queueTitle),
     description: options.jobs.length === 0 ? messages.queueEmpty : undefined,
-    color: embedColors.neutral,
-    timestamp: new Date().toISOString(),
     fields
   };
 }
 
-export function formatDoctorEmbed(checks: DoctorCheck[], language: BotLanguage = "en"): DiscordEmbed {
+export function formatDoctorMessage(checks: DoctorCheck[], language: BotLanguage = "en"): FormattedDiscordMessage {
   const messages = t(language);
-  const failed = checks.filter((check) => check.status === "fail").length;
-  const warnings = checks.filter((check) => check.status === "warn").length;
-  const color = failed > 0 ? embedColors.failed : warnings > 0 ? 0xf2c94c : embedColors.complete;
-
   return {
     title: plainTitle(messages.doctorTitle),
-    color,
-    timestamp: new Date().toISOString(),
     fields: checks.map((check) => ({
       name: `${statusLabel(check.status)} ${check.name}`,
       value: code(clip(check.detail, 900))
@@ -504,7 +470,7 @@ export function formatDoctorEmbed(checks: DoctorCheck[], language: BotLanguage =
 }
 
 function appendUsageFields(
-  fields: DiscordEmbedField[],
+  fields: DiscordMessageField[],
   usage: CodexUsage | undefined,
   language: BotLanguage,
   detailed: boolean

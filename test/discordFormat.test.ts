@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatCodexResponse, formatRunFailedEmbed, formatRunStoppedEmbed, formatStatusEmbed, formatUsageEmbed, splitDiscordMessage, summarizeLongResponse } from "../src/discordFormat";
+import { formatCodexResponse, formatRunFailedMessage, formatRunStoppedMessage, formatStatusMessage, formatUsageMessage, splitDiscordMessage, summarizeLongResponse } from "../src/discordFormat";
 
 describe("splitDiscordMessage", () => {
   test("returns a friendly empty response", () => {
@@ -26,7 +26,7 @@ describe("splitDiscordMessage", () => {
   });
 
   test("formats compact job status with progress", () => {
-    const embed = formatStatusEmbed({
+    const message = formatStatusMessage({
       running: true,
       jobId: "job-1",
       phase: "tool",
@@ -41,30 +41,30 @@ describe("splitDiscordMessage", () => {
       progress: ["Workspace is ready.", "Running tests: bun test"]
     }, "en");
 
-    expect(embed.fields?.some((field) => field.name === "Phase" && field.value.includes("Using tools"))).toBe(true);
-    expect(embed.fields?.some((field) => field.name === "Last event")).toBe(true);
-    expect(embed.fields?.some((field) => field.name === "Run limit" && field.value.includes("in"))).toBe(true);
-    expect(embed.fields?.some((field) => field.name === "Idle limit" && field.value.includes("in"))).toBe(true);
-    expect(embed.fields?.some((field) => field.name === "Progress" && field.value.includes("bun test"))).toBe(true);
-    expect(embed.fields?.some((field) => field.name === "Job")).toBe(false);
-    expect(embed.fields?.some((field) => field.name === "Timeline")).toBe(false);
+    expect(message.fields?.some((field) => field.name === "Phase" && field.value.includes("Using tools"))).toBe(true);
+    expect(message.fields?.some((field) => field.name === "Last event")).toBe(true);
+    expect(message.fields?.some((field) => field.name === "Run limit" && field.value.includes("in"))).toBe(true);
+    expect(message.fields?.some((field) => field.name === "Idle limit" && field.value.includes("in"))).toBe(true);
+    expect(message.fields?.some((field) => field.name === "Progress" && field.value.includes("bun test"))).toBe(true);
+    expect(message.fields?.some((field) => field.name === "Job")).toBe(false);
+    expect(message.fields?.some((field) => field.name === "Timeline")).toBe(false);
   });
 
-  test("includes live output in status embeds", () => {
-    const embed = formatStatusEmbed({
+  test("includes live output in status messages", () => {
+    const message = formatStatusMessage({
       running: true,
       phase: "responding",
       queued: 0,
       output: "hello\nworld"
     }, "en");
 
-    const outputField = embed.fields?.find((field) => field.name === "Output");
+    const outputField = message.fields?.find((field) => field.name === "Output");
     expect(outputField?.value).toContain("hello\nworld");
     expect(outputField?.value.length).toBeLessThanOrEqual(1024);
   });
 
   test("includes transcript in a separate status field", () => {
-    const embed = formatStatusEmbed({
+    const message = formatStatusMessage({
       running: true,
       phase: "tool",
       queued: 0,
@@ -72,30 +72,30 @@ describe("splitDiscordMessage", () => {
       output: "응답 초안\n검증 중입니다."
     }, "ko");
 
-    const transcriptField = embed.fields?.find((field) => field.name === "작업 로그");
-    const outputField = embed.fields?.find((field) => field.name === "출력");
+    const transcriptField = message.fields?.find((field) => field.name === "작업 로그");
+    const outputField = message.fields?.find((field) => field.name === "출력");
     expect(transcriptField?.value).toContain("bun test");
     expect(outputField?.value).toContain("검증 중입니다.");
     expect(outputField?.value).not.toContain("bun test");
   });
 
-  test("keeps long live output within embed field limits", () => {
-    const embed = formatStatusEmbed({
+  test("keeps long live output within message field limits", () => {
+    const message = formatStatusMessage({
       running: true,
       phase: "responding",
       queued: 0,
       output: "a".repeat(5000)
     }, "en");
 
-    const outputField = embed.fields?.find((field) => field.name === "Output");
+    const outputField = message.fields?.find((field) => field.name === "Output");
     expect(outputField?.value).not.toContain("latest output");
     expect(outputField?.value).not.toContain("최근 출력");
     expect(outputField?.value.length).toBeLessThanOrEqual(1024);
   });
 
-  test("keeps live output on stopped and failed embeds", () => {
-    const stopped = formatRunStoppedEmbed({ elapsedMs: 1000, output: "partial" }, "en");
-    const failed = formatRunFailedEmbed({ elapsedMs: 1000, error: "boom", output: "partial" }, "en");
+  test("keeps live output on stopped and failed messages", () => {
+    const stopped = formatRunStoppedMessage({ elapsedMs: 1000, output: "partial" }, "en");
+    const failed = formatRunFailedMessage({ elapsedMs: 1000, error: "boom", output: "partial" }, "en");
 
     expect(stopped.fields?.some((field) => field.name === "Output" && field.value.includes("partial"))).toBe(true);
     expect(failed.fields?.some((field) => field.name === "Output" && field.value.includes("partial"))).toBe(true);
@@ -107,7 +107,7 @@ describe("splitDiscordMessage", () => {
   });
 
   test("formats Codex usage details", () => {
-    const embed = formatUsageEmbed({
+    const message = formatUsageMessage({
       total: {
         inputTokens: 10,
         cachedInputTokens: 4,
@@ -131,10 +131,10 @@ describe("splitDiscordMessage", () => {
       }
     }, "en");
 
-    expect(embed.title).toBe("Codex usage");
-    expect(embed.fields?.some((field) => field.name === "Total tokens" && field.value.includes("12"))).toBe(true);
-    expect(embed.fields?.some((field) => field.name === "Rate limits" && field.value.includes("primary 3%"))).toBe(true);
-    expect(embed.fields?.some((field) => field.name === "Resets" && field.value.includes("2026-05-29"))).toBe(true);
+    expect(message.title).toBe("Codex usage");
+    expect(message.fields?.some((field) => field.name === "Total tokens" && field.value.includes("12"))).toBe(true);
+    expect(message.fields?.some((field) => field.name === "Rate limits" && field.value.includes("primary 3%"))).toBe(true);
+    expect(message.fields?.some((field) => field.name === "Resets" && field.value.includes("2026-05-29"))).toBe(true);
   });
 
   test("summarizes long file responses", () => {

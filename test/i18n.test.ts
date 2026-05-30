@@ -4,12 +4,12 @@ import {
   formatDuration,
   formatError,
   formatRunComplete,
-  formatRunCompleteEmbed,
+  formatRunCompleteMessage,
   formatRunHeader,
-  formatRunRestartedEmbed,
-  formatRunStartEmbed,
-  formatStatusEmbed,
-  formatWorkspaceEmbed
+  formatRunRestartedMessage,
+  formatRunStartMessage,
+  formatStatusMessage,
+  formatWorkspaceMessage
 } from "../src/discordFormat";
 import { parseLanguage } from "../src/i18n";
 import { formatCommandHelp } from "../src/threadCommands";
@@ -54,9 +54,9 @@ describe("i18n", () => {
     expect(formatDuration(61_000, "ko")).toBe("1분 1초");
   });
 
-  test("formats Korean status embeds", () => {
+  test("formats Korean status messages", () => {
     expect(
-      formatRunStartEmbed(
+      formatRunStartMessage(
         {
           workspaceDir: "/tmp/work",
           model: "gpt-5.5",
@@ -67,10 +67,10 @@ describe("i18n", () => {
       ).title
     ).toBe("Codex 작업 시작");
 
-    expect(formatRunCompleteEmbed({ elapsedMs: 11_000 }, "ko").fields?.[0]?.value).toBe("`11초`");
-    expect(formatRunRestartedEmbed({ elapsedMs: 11_000, queued: 2 }, "ko").title).toBe("Codex 작업 재시작");
-    expect(formatStatusEmbed({ running: true, elapsedMs: 61_000, queued: 0 }, "ko").title).toBe("Codex 상태");
-    expect(formatWorkspaceEmbed({ path: "/tmp/work", files: 2, bytes: 1024 }, "ko").fields?.[2]?.value)
+    expect(formatRunCompleteMessage({ elapsedMs: 11_000 }, "ko").fields?.[0]?.value).toBe("`11초`");
+    expect(formatRunRestartedMessage({ elapsedMs: 11_000, queued: 2 }, "ko").title).toBe("Codex 작업 재시작");
+    expect(formatStatusMessage({ running: true, elapsedMs: 61_000, queued: 0 }, "ko").title).toBe("Codex 상태");
+    expect(formatWorkspaceMessage({ path: "/tmp/work", files: 2, bytes: 1024 }, "ko").fields?.[2]?.value)
       .toContain("2개 파일");
   });
 
