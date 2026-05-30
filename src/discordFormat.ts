@@ -683,9 +683,7 @@ function formatLiveOutput(output: string, language: BotLanguage): string {
     return `${prefix}${escaped}${suffix}`;
   }
   const tail = escaped.slice(escaped.length - limit).replace(/^[^\n]*\n?/, "");
-  const marker = language === "ko" ? "(최근 출력)" : "(latest output)";
-  const bodyLimit = limit - marker.length - 1;
-  return `${prefix}${marker}\n${tail.slice(Math.max(0, tail.length - bodyLimit))}${suffix}`;
+  return `${prefix}${tail.slice(Math.max(0, tail.length - limit))}${suffix}`;
 }
 
 function escapeMarkdown(value: string): string {

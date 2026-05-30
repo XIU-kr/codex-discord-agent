@@ -2112,13 +2112,12 @@ function formatShellCommandEmbed(
     ? blockedReason
     : result.output.trim() || (phase === "running" ? isKorean ? "출력을 기다리는 중..." : "Waiting for output..." : isKorean ? "(출력 없음)" : "(no output)");
   const omitted = result.truncated || escapeCodeFence(output).length > 3_200;
-  const outputLabel = omitted ? isKorean ? "(마지막 출력)" : "(latest output)" : "";
   const header = [
     `${isKorean ? "명령" : "Command"}: \`${inlineCode(clip(result.command, 320))}\``,
     `${isKorean ? "상태" : "Status"}: \`${status}\``,
     `${isKorean ? "시간" : "Duration"}: \`${formatShellDuration(result.durationMs)}\``,
     "",
-    `\`\`\`text${outputLabel ? `\n${outputLabel}` : ""}`
+    "```text"
   ].join("\n");
   const footer = `\n\`\`\`${result.truncated ? isKorean ? "\n_출력 수집 한도에 도달했습니다._" : "\n_Output capture limit reached._" : ""}`;
   const outputBody = tailForEmbed(escapeCodeFence(output), 4096 - header.length - footer.length);

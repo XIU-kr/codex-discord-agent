@@ -153,6 +153,35 @@ describe("parseCodexJsonLine", () => {
     expect(state.finalMessages).toEqual(["done"]);
   });
 
+  test("deduplicates assistant messages mirrored across event and response records", () => {
+    const state: CodexParseState = { finalMessages: [], deltaMessages: [] };
+    const message = "**검증**\n대상 테스트는 통과했어요.";
+
+    parseCodexJsonLine(
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "agent_message",
+          message
+        }
+      }),
+      state
+    );
+    parseCodexJsonLine(
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: message }]
+        }
+      }),
+      state
+    );
+
+    expect(state.finalMessages).toEqual([message]);
+  });
+
   test("extracts token usage from token count events", () => {
     const state: CodexParseState = { finalMessages: [], deltaMessages: [] };
 

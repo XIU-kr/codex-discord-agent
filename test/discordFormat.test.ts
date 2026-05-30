@@ -72,7 +72,8 @@ describe("splitDiscordMessage", () => {
     }, "en");
 
     const outputField = embed.fields?.find((field) => field.name === "Output");
-    expect(outputField?.value).toContain("latest output");
+    expect(outputField?.value).not.toContain("latest output");
+    expect(outputField?.value).not.toContain("최근 출력");
     expect(outputField?.value.length).toBeLessThanOrEqual(1024);
   });
 

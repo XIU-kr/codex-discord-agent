@@ -45,6 +45,7 @@ export interface CodexParseState {
   toolCalls?: Record<string, CodexToolCall>;
   toolOutputCallIds?: string[];
   toolTranscript?: string[];
+  finalMessageSignatures?: string[];
 }
 
 interface CodexToolCall {
@@ -506,7 +507,7 @@ export function parseCodexJsonLine(line: string, state: CodexParseState): void {
 
   const finalMessage = extractFinalAssistantMessage(event);
   if (finalMessage) {
-    state.finalMessages.push(finalMessage);
+    appendFinalMessage(state, finalMessage);
     return;
   }
 
@@ -514,6 +515,19 @@ export function parseCodexJsonLine(line: string, state: CodexParseState): void {
   if (deltaMessage) {
     state.deltaMessages.push(deltaMessage);
   }
+}
+
+function appendFinalMessage(state: CodexParseState, message: string): void {
+  const signature = message.trim();
+  if (!signature) {
+    return;
+  }
+  state.finalMessageSignatures ??= state.finalMessages.map((existing) => existing.trim());
+  if (state.finalMessageSignatures.includes(signature)) {
+    return;
+  }
+  state.finalMessages.push(message);
+  state.finalMessageSignatures.push(signature);
 }
 
 function collectToolTranscript(event: unknown, state: CodexParseState): void {
