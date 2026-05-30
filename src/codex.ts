@@ -428,9 +428,12 @@ class CodexAppServerClient {
       await this.request("initialize", {
         clientInfo: {
           name: "codex-discord-agent",
-          version: "0.0.33"
+          version: "0.0.34"
         },
-        capabilities: null
+        capabilities: {
+          experimentalApi: true,
+          requestAttestation: false
+        }
       });
       this.notify("initialized");
     })();

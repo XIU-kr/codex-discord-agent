@@ -363,6 +363,10 @@ function notify(method, params) {
 rl.on("line", (line) => {
   const message = JSON.parse(line);
   if (message.method === "initialize") {
+    if (message.params.capabilities?.experimentalApi !== true || message.params.capabilities?.requestAttestation !== false) {
+      write({ jsonrpc: "2.0", id: message.id, error: { message: "missing experimental capability" } });
+      return;
+    }
     respond(message.id, { userAgent: "fake", codexHome: "${dir}", platformFamily: "unix", platformOs: "linux" });
     return;
   }
