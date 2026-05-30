@@ -1,7 +1,9 @@
+import { Buffer } from "node:buffer";
 import path from "node:path";
 import {
   ActionRowBuilder,
   ApplicationCommandOptionType,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -46,6 +48,10 @@ import {
   formatStatusEmbed,
   formatUsageEmbed,
   formatWorkspaceEmbed,
+  prefixChunks,
+  shouldSendAsFile,
+  splitDiscordMessage,
+  summarizeLongResponse,
 } from "./discordFormat";
 import { t } from "./i18n";
 import { buildCodexPrompt, stripHiddenPromptContent } from "./prompts";
@@ -994,7 +1000,6 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       }).catch(() => undefined);
     }, 30_000);
 
-    let streamedMessages = 0;
     await persistRunningJob(state, "codex", "Codex process started.");
     await editRunningStatus(thread, state);
     const result = await runCodex({
@@ -1032,16 +1037,12 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
         if (state.running) {
           state.running.codexResponse = formatCodexResponse(stripHiddenPromptContent(content), config.language);
         }
-        scheduleLiveStatusEdit();
       },
       onTranscriptSnapshot: (content) => {
         if (state.running) {
           state.running.codexTranscript = content;
         }
         scheduleLiveStatusEdit();
-      },
-      onMessage: async () => {
-        streamedMessages += 1;
       }
     });
 
@@ -1051,11 +1052,11 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     if (result.usage) {
       await saveUsageState(workspace, result.usage);
     }
-    if (streamedMessages === 0) {
-      if (state.running) {
-        state.running.codexResponse = formatCodexResponse(stripHiddenPromptContent(result.content), config.language);
-      }
+    const codexResponse = formatCodexResponse(stripHiddenPromptContent(result.content), config.language);
+    if (state.running) {
+      state.running.codexResponse = codexResponse;
     }
+    await sendCodexResponse(thread, codexResponse, job.id);
 
     await persistRunningJob(state, "completed", "Codex job completed.", "completed");
     scheduleLiveStatusEdit(true);
@@ -1070,8 +1071,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
           bytes: stats.bytes,
           usage: result.usage ?? state.running.usage,
           progress: state.running.progressEvents,
-          transcript: buildCodexTranscriptOutput(state.running),
-          output: buildCodexLiveOutput(state.running)
+          transcript: buildCodexTranscriptOutput(state.running)
         }, config.language)],
         components: idleComponents(),
         allowedMentions: { parse: [] }
@@ -1099,8 +1099,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
         await editDiscordMessage(running.statusMessage, {
           embeds: [formatRunStoppedEmbed({
             elapsedMs: Date.now() - startedAt,
-            transcript: buildCodexTranscriptOutput(running),
-            output: buildCodexLiveOutput(running)
+            transcript: buildCodexTranscriptOutput(running)
           }, config.language)],
           components: idleComponents(),
           allowedMentions: { parse: [] }
@@ -1119,8 +1118,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
             elapsedMs: Date.now() - startedAt,
             lastEvent: running.lastEvent,
             error: error instanceof Error ? error.message : String(error),
-            transcript: buildCodexTranscriptOutput(running),
-            output: buildCodexLiveOutput(running)
+            transcript: buildCodexTranscriptOutput(running)
           }, config.language)],
         components: failedComponents(),
         allowedMentions: { parse: [] }
@@ -1746,15 +1744,35 @@ function buildStatusEmbed(state: ThreadState, runningFlag: boolean) {
     usage: running?.usage,
     progress: running?.progressEvents,
     transcript: running ? buildCodexTranscriptOutput(running) : undefined,
-    output: running ? buildCodexLiveOutput(running) : undefined,
     warning: buildOperationalWarning()
   }, config.language);
 }
 
-function buildCodexLiveOutput(running: RunningJob): string | undefined {
-  const assistantLabel = config.language === "ko" ? "응답 초안" : "Assistant";
-  const response = stripHiddenPromptContent(running.codexResponse ?? "");
-  return response ? `${assistantLabel}\n${response}` : undefined;
+async function sendCodexResponse(thread: ThreadChannel, response: string, jobId: string): Promise<void> {
+  if (shouldSendAsFile(response, config.language)) {
+    const attachment = new AttachmentBuilder(Buffer.from(response, "utf8"), {
+      name: `codex-response-${jobId}.md`
+    });
+    await sendThreadMessage(thread, {
+      content: summarizeLongResponse(response, config.language),
+      files: [attachment],
+      allowedMentions: { parse: [] }
+    }, discordApiOptions(), { action: "job.response.file", threadId: thread.id, jobId });
+    return;
+  }
+
+  const chunks = prefixChunks(splitDiscordMessage(response, undefined, config.language));
+  for (const [index, chunk] of chunks.entries()) {
+    await sendThreadMessage(thread, {
+      content: chunk,
+      allowedMentions: { parse: [] }
+    }, discordApiOptions(), {
+      action: "job.response.send",
+      threadId: thread.id,
+      jobId,
+      phase: chunks.length > 1 ? `chunk-${index + 1}` : undefined
+    });
+  }
 }
 
 function buildCodexTranscriptOutput(running: RunningJob): string | undefined {
