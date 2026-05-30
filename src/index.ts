@@ -1,9 +1,7 @@
-import { Buffer } from "node:buffer";
 import path from "node:path";
 import {
   ActionRowBuilder,
   ApplicationCommandOptionType,
-  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -48,10 +46,8 @@ import {
   formatStatusEmbed,
   formatUsageEmbed,
   formatWorkspaceEmbed,
-  prefixChunks,
-  shouldSendAsFile,
   splitDiscordMessage,
-  summarizeLongResponse,
+  type DiscordEmbed
 } from "./discordFormat";
 import { t } from "./i18n";
 import { buildCodexPrompt, stripHiddenPromptContent } from "./prompts";
@@ -109,6 +105,7 @@ interface RunningJob {
   idleDeadlineAt?: number;
   abortController: AbortController;
   statusMessage?: Message;
+  transcriptMessage?: Message;
   stopRequested?: boolean;
   interruptRequested?: boolean;
   workspace?: ThreadWorkspace;
@@ -905,6 +902,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
   const startedAt = Date.now();
   let refreshStatus: ReturnType<typeof setInterval> | undefined;
   let liveStatusEdit: ReturnType<typeof setTimeout> | undefined;
+  let liveTranscriptEdit: ReturnType<typeof setTimeout> | undefined;
 
   try {
     const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
@@ -943,7 +941,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     });
 
     const statusMessage = await sendThreadMessage(thread, {
-      embeds: [formatRunStartEmbed({
+      content: formatEmbedAsMessage(formatRunStartEmbed({
         jobId: job.id,
         workspaceDir: displayWorkspacePath(thread.id, workspace.dir),
         model: settings.model,
@@ -952,7 +950,7 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
         queued: state.queue.length,
         progress: state.running?.progressEvents,
         warning: buildOperationalWarning()
-      }, config.language)],
+      }, config.language)),
       components: runningComponents(),
       allowedMentions: { parse: [] }
     }, discordApiOptions(), { action: "job.start", threadId: thread.id, jobId: job.id, phase: "preparing" });
@@ -983,13 +981,37 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       liveStatusEdit.unref();
     };
 
+    const scheduleTranscriptEdit = (force = false): void => {
+      if (!state.running?.codexTranscript) {
+        return;
+      }
+      if (force) {
+        if (liveTranscriptEdit) {
+          clearTimeout(liveTranscriptEdit);
+          liveTranscriptEdit = undefined;
+        }
+        void editTranscriptMessage(thread, state, job.id);
+        return;
+      }
+      if (liveTranscriptEdit) {
+        return;
+      }
+      liveTranscriptEdit = setTimeout(() => {
+        liveTranscriptEdit = undefined;
+        void editTranscriptMessage(thread, state, job.id);
+      }, 1_000);
+      liveTranscriptEdit.unref();
+    };
+
+    let sentCodexMessages = 0;
     refreshStatus = setInterval(() => {
       const running = state.running;
       if (!running?.statusMessage) {
         return;
       }
       void editDiscordMessage(running.statusMessage, {
-        embeds: [buildStatusEmbed(state, true)],
+        content: formatEmbedAsMessage(buildStatusEmbed(state, true)),
+        embeds: [],
         components: runningComponents(),
         allowedMentions: { parse: [] }
       }, discordApiOptions(), {
@@ -1042,7 +1064,15 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
         if (state.running) {
           state.running.codexTranscript = content;
         }
-        scheduleLiveStatusEdit();
+        scheduleTranscriptEdit();
+      },
+      onMessage: async (content) => {
+        const codexResponse = formatCodexResponse(stripHiddenPromptContent(content), config.language);
+        if (state.running) {
+          state.running.codexResponse = codexResponse;
+        }
+        await sendCodexResponse(thread, codexResponse, job.id);
+        sentCodexMessages += 1;
       }
     });
 
@@ -1056,7 +1086,10 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     if (state.running) {
       state.running.codexResponse = codexResponse;
     }
-    await sendCodexResponse(thread, codexResponse, job.id);
+    if (sentCodexMessages === 0) {
+      await sendCodexResponse(thread, codexResponse, job.id);
+    }
+    scheduleTranscriptEdit(true);
 
     await persistRunningJob(state, "completed", "Codex job completed.", "completed");
     scheduleLiveStatusEdit(true);
@@ -1064,15 +1097,15 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     if (state.running?.statusMessage) {
       const stats = await getWorkspaceStats(workspace);
       await editDiscordMessage(state.running.statusMessage, {
-        embeds: [formatRunCompleteEmbed({
+        content: formatEmbedAsMessage(formatRunCompleteEmbed({
           elapsedMs: Date.now() - startedAt,
           sessionId: result.sessionId ?? sessionId,
           files: stats.files,
           bytes: stats.bytes,
           usage: result.usage ?? state.running.usage,
-          progress: state.running.progressEvents,
-          transcript: buildCodexTranscriptOutput(state.running)
-        }, config.language)],
+          progress: state.running.progressEvents
+        }, config.language)),
+        embeds: [],
         components: idleComponents(),
         allowedMentions: { parse: [] }
       }, discordApiOptions(), { action: "job.complete.edit", threadId: thread.id, jobId: job.id, phase: "completed" });
@@ -1084,7 +1117,8 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       await persistRunningJob(state, "interrupted", "Paused for a new Discord message.", "running");
       if (running.statusMessage) {
         await editDiscordMessage(running.statusMessage, {
-          embeds: [buildStatusEmbed(state, true)],
+          content: formatEmbedAsMessage(buildStatusEmbed(state, true)),
+          embeds: [],
           components: runningComponents(),
           allowedMentions: { parse: [] }
         }, discordApiOptions(), { action: "job.interrupted.edit", threadId: thread.id, jobId: running.id, phase: "interrupted" })
@@ -1097,10 +1131,10 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
       await persistRunningJob(state, "stopped", "Codex job stopped.", "stopped");
       if (running.statusMessage) {
         await editDiscordMessage(running.statusMessage, {
-          embeds: [formatRunStoppedEmbed({
-            elapsedMs: Date.now() - startedAt,
-            transcript: buildCodexTranscriptOutput(running)
-          }, config.language)],
+          content: formatEmbedAsMessage(formatRunStoppedEmbed({
+            elapsedMs: Date.now() - startedAt
+          }, config.language)),
+          embeds: [],
           components: idleComponents(),
           allowedMentions: { parse: [] }
         }, discordApiOptions(), { action: "job.stopped.edit", threadId: thread.id, jobId: running.id, phase: "stopped" })
@@ -1114,12 +1148,12 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     await persistRunningJob(state, "failed", error instanceof Error ? error.message : String(error), "failed");
     if (running?.statusMessage) {
       await editDiscordMessage(running.statusMessage, {
-          embeds: [formatRunFailedEmbed({
+          content: formatEmbedAsMessage(formatRunFailedEmbed({
             elapsedMs: Date.now() - startedAt,
             lastEvent: running.lastEvent,
-            error: error instanceof Error ? error.message : String(error),
-            transcript: buildCodexTranscriptOutput(running)
-          }, config.language)],
+            error: error instanceof Error ? error.message : String(error)
+          }, config.language)),
+        embeds: [],
         components: failedComponents(),
         allowedMentions: { parse: [] }
       }, discordApiOptions(), { action: "job.failed.edit", threadId: thread.id, jobId: running.id, phase: "failed" })
@@ -1131,6 +1165,9 @@ async function handleThreadPrompt(job: QueuedJob, state: ThreadState): Promise<v
     }
     if (liveStatusEdit) {
       clearTimeout(liveStatusEdit);
+    }
+    if (liveTranscriptEdit) {
+      clearTimeout(liveTranscriptEdit);
     }
     stopTyping();
   }
@@ -1170,14 +1207,14 @@ async function handleThreadCommand(thread: ThreadChannel, command: ThreadCommand
       const stats = await getWorkspaceStats(workspace);
       const sessionId = await loadOrRecoverSessionId(workspace);
       await sendThreadMessage(thread, {
-        embeds: [formatWorkspaceEmbed({
+        content: formatEmbedAsMessage(formatWorkspaceEmbed({
           path: displayWorkspacePath(thread.id, workspace.dir),
           sessionId,
           files: stats.files,
           bytes: stats.bytes,
           updatedAt: stats.updatedAt,
           warning: buildOperationalWarning()
-        }, config.language)],
+        }, config.language)),
         allowedMentions: { parse: [] }
       }, discordApiOptions(), { action: "command.workspace", threadId: thread.id });
       return;
@@ -1265,14 +1302,14 @@ async function handleShellCommand(thread: ThreadChannel, commandText: string): P
 
   await sendThreadTyping(thread, discordApiOptions(), { action: "command.shell.typing", threadId: thread.id });
   const statusMessage = await sendThreadMessage(thread, {
-    embeds: [formatShellCommandEmbed({
+    content: formatEmbedAsMessage(formatShellCommandEmbed({
       command,
       cwd: process.cwd(),
       durationMs: 0,
       output: "",
       timedOut: false,
       truncated: false
-    }, "running")],
+    }, "running")),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "command.shell.start", threadId: thread.id });
   let lastEditAt = 0;
@@ -1298,7 +1335,8 @@ async function handleShellCommand(thread: ThreadChannel, commandText: string): P
     }
     lastEditAt = now;
     void editDiscordMessage(statusMessage, {
-      embeds: [formatShellCommandEmbed(snapshot, "running")],
+      content: formatEmbedAsMessage(formatShellCommandEmbed(snapshot, "running")),
+      embeds: [],
       allowedMentions: { parse: [] }
     }, discordApiOptions(), { action: "command.shell.update", threadId: thread.id }).catch(() => undefined);
   };
@@ -1314,7 +1352,8 @@ async function handleShellCommand(thread: ThreadChannel, commandText: string): P
     clearTimeout(pendingEdit);
   }
   await editDiscordMessage(statusMessage, {
-    embeds: [formatShellCommandEmbed(result, result.blockedReason ? "blocked" : "complete")],
+    content: formatEmbedAsMessage(formatShellCommandEmbed(result, result.blockedReason ? "blocked" : "complete")),
+    embeds: [],
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "command.shell.complete", threadId: thread.id });
 }
@@ -1334,14 +1373,14 @@ async function notifyInterruptedIfAny(thread: ThreadChannel): Promise<void> {
     return;
   }
   await sendThreadMessage(thread, {
-    embeds: [formatStatusEmbed({
+    content: formatEmbedAsMessage(formatStatusEmbed({
       running: false,
       jobId: interrupted.jobId,
       phase: interrupted.phase,
       lastEvent: messages.interruptedHint,
       queued: 0,
       warning: buildOperationalWarning()
-    }, config.language)],
+    }, config.language)),
     components: idleComponents(),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "job.interrupted.notice", threadId: thread.id, jobId: interrupted.jobId });
@@ -1563,10 +1602,11 @@ async function handleSelectMenuInteraction(interaction: StringSelectMenuInteract
     const state = getThreadState(thread.id);
     state.selectedQueueJobId = interaction.values[0];
     await interaction.update({
-      embeds: [formatQueueEmbed({
+      content: formatEmbedAsMessage(formatQueueEmbed({
         jobs: state.queue,
         selectedJobId: state.selectedQueueJobId
-      }, config.language)],
+      }, config.language)),
+      embeds: [],
       components: queueComponents(state),
       allowedMentions: { parse: [] }
     });
@@ -1597,7 +1637,8 @@ async function handleSelectMenuInteraction(interaction: StringSelectMenuInteract
   }
 
   await interaction.update({
-    embeds: [formatSettingsEmbed(settings, config.language)],
+    content: formatEmbedAsMessage(formatSettingsEmbed(settings, config.language)),
+    embeds: [],
     components: settingsComponents(settings),
     allowedMentions: { parse: [] }
   });
@@ -1743,25 +1784,12 @@ function buildStatusEmbed(state: ThreadState, runningFlag: boolean) {
     queueSummary: formatQueueSummary(state.queue),
     usage: running?.usage,
     progress: running?.progressEvents,
-    transcript: running ? buildCodexTranscriptOutput(running) : undefined,
     warning: buildOperationalWarning()
   }, config.language);
 }
 
 async function sendCodexResponse(thread: ThreadChannel, response: string, jobId: string): Promise<void> {
-  if (shouldSendAsFile(response, config.language)) {
-    const attachment = new AttachmentBuilder(Buffer.from(response, "utf8"), {
-      name: `codex-response-${jobId}.md`
-    });
-    await sendThreadMessage(thread, {
-      content: summarizeLongResponse(response, config.language),
-      files: [attachment],
-      allowedMentions: { parse: [] }
-    }, discordApiOptions(), { action: "job.response.file", threadId: thread.id, jobId });
-    return;
-  }
-
-  const chunks = prefixChunks(splitDiscordMessage(response, undefined, config.language));
+  const chunks = splitDiscordMessage(response, undefined, config.language);
   for (const [index, chunk] of chunks.entries()) {
     await sendThreadMessage(thread, {
       content: chunk,
@@ -1775,9 +1803,49 @@ async function sendCodexResponse(thread: ThreadChannel, response: string, jobId:
   }
 }
 
-function buildCodexTranscriptOutput(running: RunningJob): string | undefined {
-  const transcript = latestTranscriptEntries(stripHiddenPromptContent(running.codexTranscript ?? ""), 3);
-  return transcript.length > 0 ? transcript.join("\n\n") : undefined;
+async function editTranscriptMessage(thread: ThreadChannel, state: ThreadState, jobId: string): Promise<void> {
+  const running = state.running;
+  if (!running?.codexTranscript) {
+    return;
+  }
+
+  const content = formatTranscriptMessage(running.codexTranscript);
+  const options = {
+    content,
+    embeds: [],
+    allowedMentions: { parse: [] }
+  };
+  if (running.transcriptMessage) {
+    await editDiscordMessage(running.transcriptMessage, options, discordApiOptions(), {
+      action: "job.transcript.edit",
+      threadId: thread.id,
+      jobId,
+      phase: running.phase
+    }).catch(() => undefined);
+    return;
+  }
+
+  running.transcriptMessage = await sendThreadMessage(thread, options, discordApiOptions(), {
+    action: "job.transcript.send",
+    threadId: thread.id,
+    jobId,
+    phase: running.phase
+  }).catch(() => undefined);
+}
+
+function formatTranscriptMessage(transcript: string): string {
+  const title = config.language === "ko" ? "**작업 로그**" : "**Transcript**";
+  const entries = latestTranscriptEntries(stripHiddenPromptContent(transcript), 6).join("\n\n");
+  const fallback = config.language === "ko" ? "기록된 작업 로그가 없습니다." : "No transcript yet.";
+  const body = entries || fallback;
+  const escaped = body.replace(/```/g, "'''");
+  const prefix = `${title}\n\`\`\`text\n`;
+  const suffix = "\n```";
+  const limit = 1900 - prefix.length - suffix.length;
+  const tail = escaped.length > limit
+    ? escaped.slice(escaped.length - limit).replace(/^[^\n]*\n?/, "")
+    : escaped;
+  return `${prefix}${tail}${suffix}`;
 }
 
 function latestTranscriptEntries(transcript: string, count: number): string[] {
@@ -1872,7 +1940,8 @@ async function editRunningStatus(thread: ThreadChannel, state: ThreadState): Pro
     return;
   }
   await editDiscordMessage(running.statusMessage, {
-    embeds: [buildStatusEmbed(state, true)],
+    content: formatEmbedAsMessage(buildStatusEmbed(state, true)),
+    embeds: [],
     components: runningComponents(),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), {
@@ -1906,12 +1975,21 @@ function escapeMarkdown(value: string): string {
   return value.replace(/([*_`~|])/g, "\\$1");
 }
 
+function formatEmbedAsMessage(embed: DiscordEmbed): string {
+  const lines = [
+    `**${embed.title}**`,
+    embed.description,
+    ...(embed.fields ?? []).map((field) => `**${field.name}**\n${field.value}`)
+  ].filter((line): line is string => typeof line === "string" && line.trim().length > 0);
+  return clip(lines.join("\n\n"), 1900);
+}
+
 async function sendThreadStatus(thread: ThreadChannel, state: ThreadState | undefined): Promise<void> {
   const embed = state?.running
     ? buildStatusEmbed(state, true)
     : await buildIdleStatusEmbed(thread, state);
   await sendThreadMessage(thread, {
-    embeds: [embed],
+    content: formatEmbedAsMessage(embed),
     components: state?.running ? runningComponents() : idleComponents(),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "status.send", threadId: thread.id, jobId: state?.running?.id, phase: state?.running?.phase });
@@ -1938,7 +2016,8 @@ async function ensureControlPanel(thread: ThreadChannel, state: ThreadState | un
     }, config.language);
 
   const options = {
-    embeds: [embed],
+    content: formatEmbedAsMessage(embed),
+    embeds: [],
     components: state?.running ? runningComponents() : idleComponents(),
     allowedMentions: { parse: [] }
   };
@@ -1986,7 +2065,8 @@ async function findPinnedControlPanel(thread: ThreadChannel): Promise<Message | 
   const titles = new Set(["Codex control panel", "Codex 컨트롤 패널", plainPanelTitle()]);
   return pinned?.find((message) =>
     message.author.id === client.user?.id &&
-    message.embeds.some((embed) => embed.title ? titles.has(embed.title) : false)
+    (message.embeds.some((embed) => embed.title ? titles.has(embed.title) : false) ||
+      [...titles].some((title) => message.content.includes(title)))
   );
 }
 
@@ -2010,7 +2090,7 @@ function plainPanelTitle(): string {
 async function sendThreadSettings(thread: ThreadChannel): Promise<void> {
   const settings = getThreadSettings(thread.id);
   await sendThreadMessage(thread, {
-    embeds: [formatSettingsEmbed(settings, config.language)],
+    content: formatEmbedAsMessage(formatSettingsEmbed(settings, config.language)),
     components: settingsComponents(settings),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "settings.send", threadId: thread.id });
@@ -2018,10 +2098,10 @@ async function sendThreadSettings(thread: ThreadChannel): Promise<void> {
 
 async function sendThreadQueue(thread: ThreadChannel, state: ThreadState | undefined): Promise<void> {
   await sendThreadMessage(thread, {
-    embeds: [formatQueueEmbed({
+    content: formatEmbedAsMessage(formatQueueEmbed({
       jobs: state?.queue ?? [],
       selectedJobId: state?.selectedQueueJobId
-    }, config.language)],
+    }, config.language)),
     components: queueComponents(state),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "queue.send", threadId: thread.id });
@@ -2031,7 +2111,7 @@ async function sendThreadDoctor(thread: ThreadChannel): Promise<void> {
   const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
   const checks = await runDoctor(config, workspace);
   await sendThreadMessage(thread, {
-    embeds: [formatDoctorEmbed(checks, config.language)],
+    content: formatEmbedAsMessage(formatDoctorEmbed(checks, config.language)),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "doctor.send", threadId: thread.id });
 }
@@ -2039,7 +2119,7 @@ async function sendThreadDoctor(thread: ThreadChannel): Promise<void> {
 async function sendThreadUsage(thread: ThreadChannel, state: ThreadState | undefined): Promise<void> {
   const workspace = await ensureThreadWorkspace(config.baseWorkspaceDir, thread.guildId, thread.id);
   await sendThreadMessage(thread, {
-    embeds: [formatUsageEmbed(state?.running?.usage ?? await loadUsageState(workspace), config.language)],
+    content: formatEmbedAsMessage(formatUsageEmbed(state?.running?.usage ?? await loadUsageState(workspace), config.language)),
     allowedMentions: { parse: [] }
   }, discordApiOptions(), { action: "usage.send", threadId: thread.id });
 }
